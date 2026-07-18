@@ -1,0 +1,62 @@
+{
+  "manifest_version": 3,
+  "name": "OrgClock",
+  "version": "5.0.0",
+  "description": "Automatic timesheet across every site you work in — Salesforce orgs, JIRA, docs, research — with per-site exclusions for things like email that aren't project time.",
+  "minimum_chrome_version": "116",
+
+  "permissions": [
+    "storage",
+    "unlimitedStorage",
+    "idle",
+    "alarms",
+    "tabs",
+    "downloads",
+    "scripting"
+  ],
+
+  "host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ],
+
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+
+  "web_accessible_resources": [
+    {
+      "resources": ["pages/overlay.css"],
+      "matches": ["<all_urls>"]
+    }
+  ],
+
+  "action": {
+    "default_title": "OrgClock",
+    "default_popup": "pages/actionPopup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}
+
+

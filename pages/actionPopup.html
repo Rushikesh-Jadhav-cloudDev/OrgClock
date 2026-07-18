@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>OrgClock</title>
+<link rel="stylesheet" href="common.css" />
+<link rel="stylesheet" href="actionPopup.css" />
+</head>
+<body>
+  <div class="ap-status" id="apStatus">
+    <span class="pulse-dot" id="apDot"></span>
+    <div>
+      <p class="ap-status-line" id="apStatusLine">Checking…</p>
+      <p class="ap-status-sub" id="apStatusSub"></p>
+    </div>
+  </div>
+
+  <div class="ap-actions">
+    <button type="button" class="ap-btn ap-btn-primary" id="apLogTask">
+      <svg viewBox="0 0 24 24" width="16" height="16"><path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+      Log New Task
+    </button>
+    <button type="button" class="ap-btn" id="apContinue">
+      <svg viewBox="0 0 24 24" width="16" height="16"><path d="M8 5v14l11-7z" fill="currentColor"/></svg>
+      Continue Current Task
+    </button>
+    <button type="button" class="ap-btn" id="apDashboard">
+      <svg viewBox="0 0 24 24" width="16" height="16"><rect x="3.5" y="3.5" width="7" height="7" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>
+      Open Dashboard
+    </button>
+    <button type="button" class="ap-btn ap-btn-pause hidden" id="apPause">
+      <svg viewBox="0 0 24 24" width="16" height="16"><rect x="6" y="5" width="4" height="14" rx="1" fill="currentColor"/><rect x="14" y="5" width="4" height="14" rx="1" fill="currentColor"/></svg>
+      Pause Tracking
+    </button>
+    <button type="button" class="ap-btn ap-btn-resume hidden" id="apResume">
+      <svg viewBox="0 0 24 24" width="16" height="16"><path d="M8 5v14l11-7z" fill="currentColor"/></svg>
+      Resume Tracking
+    </button>
+  </div>
+
+  <script type="module" src="actionPopup.js"></script>
+</body>
+</html>

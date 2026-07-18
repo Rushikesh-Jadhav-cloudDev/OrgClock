@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>OrgClock</title>
+<link rel="stylesheet" href="common.css" />
+<link rel="stylesheet" href="dashboard.css" />
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <div class="brand-badge" aria-hidden="true">
+      <svg viewBox="0 0 24 24" width="18" height="18"><circle cx="12" cy="12" r="9.25" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M12 7v5.2l3.4 2" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+    </div>
+    <div>
+      <h1>OrgClock</h1>
+      <p class="brand-sub">Automatic timesheet across everywhere you work</p>
+    </div>
+  </div>
+
+  <div class="status-pill" id="statusPill">
+    <span class="pulse-dot" id="pulseDot"></span>
+    <span id="statusText">Not tracking</span>
+    <span class="mono" id="statusTimer"></span>
+  </div>
+
+  <div class="topbar-actions">
+    <button class="icon-btn" id="exportBtn" title="Export CSV" aria-label="Export CSV">
+      <svg viewBox="0 0 24 24" width="18" height="18"><path d="M12 3v12m0 0-4-4m4 4 4-4M5 19h14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
+    <button class="icon-btn" id="themeBtn" title="Toggle theme" aria-label="Toggle theme">
+      <svg viewBox="0 0 24 24" width="18" height="18" id="themeIcon"><circle cx="12" cy="12" r="4.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 2.5v2M12 19.5v2M4.2 4.2l1.4 1.4M18.4 18.4l1.4 1.4M2.5 12h2M19.5 12h2M4.2 19.8l1.4-1.4M18.4 5.6l1.4-1.4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+    </button>
+    <button class="icon-btn" id="settingsBtn" title="Settings" aria-label="Settings">
+      <svg viewBox="0 0 24 24" width="18" height="18"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M19.4 13.5c.06-.5.06-1 0-1.5l1.9-1.4-1.5-2.6-2.2.7a7.6 7.6 0 0 0-1.3-.75L15.9 5.5h-3l-.4 2.4c-.47.18-.9.42-1.3.75l-2.2-.7-1.5 2.6 1.9 1.4a6 6 0 0 0 0 1.5l-1.9 1.4 1.5 2.6 2.2-.7c.4.33.83.57 1.3.75l.4 2.4h3l.4-2.4c.47-.18.9-.42 1.3-.75l2.2.7 1.5-2.6-1.9-1.4Z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>
+    </button>
+  </div>
+</header>
+
+<main class="content">
+
+  <section class="stats-row" id="statsRow">
+    <div class="stat-card">
+      <p class="stat-label">Today (tracked)</p>
+      <p class="stat-value mono" id="statToday">0h 00m</p>
+    </div>
+    <div class="stat-card">
+      <p class="stat-label">This week (tracked)</p>
+      <p class="stat-value mono" id="statWeek">0h 00m</p>
+    </div>
+    <div class="stat-card">
+      <p class="stat-label">Chrome active today</p>
+      <p class="stat-value mono" id="statChromeActive">0h 00m</p>
+    </div>
+    <div class="stat-card">
+      <p class="stat-label">Productive %</p>
+      <p class="stat-value mono" id="statProductive">0%</p>
+    </div>
+    <div class="stat-card">
+      <p class="stat-label">Projects touched today</p>
+      <p class="stat-value" id="statOrgs">0</p>
+    </div>
+    <div class="stat-card">
+      <p class="stat-label">Sessions today</p>
+      <p class="stat-value" id="statSessions">0</p>
+    </div>
+  </section>
+
+  <div class="banner hidden" id="rolloverBanner">
+    A new week has started — last week's timesheet was archived and is still fully browsable and exportable below.
+    <button class="text-btn" id="dismissBanner">Dismiss</button>
+  </div>
+
+  <div class="view-tabs">
+    <button class="view-tab active" data-view="history">Day-wise history</button>
+    <button class="view-tab" data-view="timeline">Timeline</button>
+    <button class="view-tab" data-view="sessions">Session summary</button>
+    <button class="view-tab" data-view="timesheet">Timesheet summary</button>
+  </div>
+
+  <section class="history" id="history" aria-label="Day-wise history">
+    <!-- populated by dashboard.js -->
+  </section>
+
+  <section class="timeline-view hidden" id="timelineView" aria-label="Daily timeline">
+    <div class="timeline-day-picker">
+      <button class="icon-btn" id="timelinePrevDay" aria-label="Previous day">‹</button>
+      <span class="mono" id="timelineDateLabel">Today</span>
+      <button class="icon-btn" id="timelineNextDay" aria-label="Next day">›</button>
+    </div>
+    <div id="timelineTrack"><!-- populated by dashboard.js --></div>
+  </section>
+
+  <section class="session-summary-view hidden" id="sessionSummaryView" aria-label="Session summary">
+    <div class="timeline-day-picker">
+      <button class="icon-btn" id="sessionsPrevDay" aria-label="Previous day">‹</button>
+      <span class="mono" id="sessionsDateLabel">Today</span>
+      <button class="icon-btn" id="sessionsNextDay" aria-label="Next day">›</button>
+    </div>
+    <div id="sessionSummaryList"><!-- populated by dashboard.js --></div>
+  </section>
+
+  <section class="timesheet-view hidden" id="timesheetView" aria-label="Timesheet summary">
+    <div class="timesheet-toolbar">
+      <button class="icon-btn" id="tsPrevWeek" aria-label="Previous week">‹</button>
+      <span class="mono" id="tsWeekLabel">This week</span>
+      <button class="icon-btn" id="tsNextWeek" aria-label="Next week">›</button>
+      <button class="btn btn-text" id="tsCopyBtn" style="margin-left:auto;">Copy for Replicon</button>
+    </div>
+    <div class="ts-table-wrap">
+      <table class="ts-table" id="tsTable">
+        <thead><tr id="tsHeadRow"></tr></thead>
+        <tbody id="tsBody"></tbody>
+        <tfoot><tr id="tsFootRow"></tr></tfoot>
+      </table>
+    </div>
+  </section>
+
+  <p class="empty-state hidden" id="emptyState">
+    No tracked time yet. Visit any site — you'll be asked which project it's for the first time each day.
+  </p>
+
+</main>
+
+<!-- ---------------------------------------------------------------- entry edit modal -->
+<div class="overlay hidden" id="entryModalOverlay">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="entryModalTitle">
+    <header class="modal-head">
+      <h2 id="entryModalTitle">Edit entry</h2>
+      <button class="icon-btn" id="closeEntryModal" aria-label="Close">✕</button>
+    </header>
+
+    <div class="modal-body" id="entryModalBody">
+      <!-- populated by dashboard.js -->
+    </div>
+  </div>
+</div>
+
+<!-- ---------------------------------------------------------------- settings drawer -->
+<div class="overlay drawer-overlay hidden" id="settingsOverlay">
+  <div class="drawer" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+    <header class="modal-head">
+      <h2 id="settingsTitle">Settings</h2>
+      <button class="icon-btn" id="closeSettings" aria-label="Close">✕</button>
+    </header>
+    <div class="modal-body">
+      <div class="field">
+        <label for="autoTrackToggle">Tracking</label>
+        <div class="toggle-row">
+          <label class="switch"><input type="checkbox" id="autoTrackToggle" /><span class="switch-slider"></span></label>
+          <span class="mono" id="autoTrackValue">On</span>
+        </div>
+        <p class="field-hint">Turns tracking off everywhere, all sites, until switched back on. For a quick pause instead, use the extension icon's Pause/Resume — this is the global on/off switch.</p>
+      </div>
+
+      <div class="field">
+        <label for="popupDelaySlider">Show the "which project" prompt</label>
+        <div class="slider-row">
+          <input type="range" id="popupDelaySlider" min="0" max="10" step="0.5" />
+          <span class="mono" id="popupDelayValue">2.5 s</span>
+        </div>
+        <p class="field-hint">Delay after a page finishes loading before asking. Keeps the prompt from interfering with the page's own loading/rendering.</p>
+      </div>
+
+      <div class="field">
+        <label for="idleSlider">Pause tracking after being idle for</label>
+        <div class="slider-row">
+          <input type="range" id="idleSlider" min="5" max="10" step="1" />
+          <span class="mono" id="idleValue">5 min</span>
+        </div>
+      </div>
+
+      <div class="field">
+        <label for="mergeGapSlider">Merge sessions on the same project within</label>
+        <div class="slider-row">
+          <input type="range" id="mergeGapSlider" min="10" max="180" step="10" />
+          <span class="mono" id="mergeGapValue">90 s</span>
+        </div>
+        <p class="field-hint">Rapid switching between two sites billed to the same project (e.g. an org tab and its JIRA board) gets combined into one block instead of many tiny ones.</p>
+      </div>
+
+      <div class="field">
+        <label for="screenGraceSlider">Count "screen time" as active through up to</label>
+        <div class="slider-row">
+          <input type="range" id="screenGraceSlider" min="0" max="30" step="5" />
+          <span class="mono" id="screenGraceValue">10 min</span>
+        </div>
+        <p class="field-hint">Extra tolerance on top of the idle setting above, just for the "Chrome active" stat — so time spent reading or thinking without touching the mouse isn't counted as away. Project billing still pauses at the idle setting above; only this overall stat gets the extra grace. Note: this can only measure Chrome's own focus and input, not whether you're actually looking at the screen.</p>
+      </div>
+
+      <div class="field">
+        <label for="themeSelect">Theme</label>
+        <select id="themeSelect">
+          <option value="system">Match system</option>
+          <option value="light">Light</option>
+          <option value="dark">Dark</option>
+        </select>
+      </div>
+
+      <div class="field">
+        <label>Projects</label>
+        <ul class="settings-project-list" id="settingsProjectList"></ul>
+      </div>
+
+      <div class="field">
+        <label>Categories</label>
+        <p class="field-hint">Built-in categories can be picked per project above. Add your own here if you need something more specific.</p>
+        <div class="add-site-row">
+          <input type="text" id="newCategoryInput" placeholder="e.g. Client Meetings" />
+          <button class="btn btn-primary" id="addCategoryBtn" type="button">Add</button>
+        </div>
+      </div>
+
+      <div class="field">
+        <label>Excluded sites</label>
+        <p class="field-hint">Every site is tracked and will ask for a project the first time you visit it each day. Add sites here that should never ask — things you keep open all day that aren't tied to one project, like email.</p>
+        <ul class="settings-project-list" id="excludedSitesList"></ul>
+        <div class="add-site-row">
+          <input type="text" id="newExcludeInput" placeholder="e.g. mail.google.com" />
+          <button class="btn btn-primary" id="addExcludeBtn" type="button">Exclude</button>
+        </div>
+        <p class="hint" id="addExcludeHint"></p>
+      </div>
+
+      <div class="field hidden" id="pendingPromptsField">
+        <label>Dismissed prompts (this session)</label>
+        <ul class="settings-project-list" id="pendingPromptsList"></ul>
+      </div>
+
+      <div class="field">
+        <label>Export</label>
+        <div class="export-row">
+          <button class="btn btn-text" id="exportWeekBtn">This week — daily summary (CSV)</button>
+          <button class="btn btn-text" id="exportAllBtn">All history — daily summary (CSV)</button>
+        </div>
+        <div class="export-row" style="margin-top:6px;">
+          <button class="btn btn-text" id="exportWeekDetailBtn">This week — every session (CSV)</button>
+          <button class="btn btn-text" id="exportAllDetailBtn">All history — every session (CSV)</button>
+        </div>
+        <div class="export-row" style="margin-top:6px;">
+          <button class="btn btn-text" id="exportSessionsBtn">Session summary — by task (CSV)</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script type="module" src="dashboard.js"></script>
+</body>
+</html>

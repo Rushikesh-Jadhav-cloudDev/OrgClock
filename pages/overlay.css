@@ -1,0 +1,152 @@
+/* overlay.css — styles for the in-page setup overlay injected by content.js.
+   Loaded inside a Shadow DOM, so everything is scoped under .orbit-root
+   rather than :root (a shadow tree has no element matching :root). */
+
+.orbit-root {
+  --primary: #2A3EB1;
+  --primary-600: #24379E;
+  --primary-100: #E4E7FA;
+  --accent: #00B8A9;
+  --accent-100: #DAF6F2;
+  --warning: #F2A93B;
+  --warning-100: #FCEED1;
+  --error: #E1523D;
+  --error-100: #FBE1DC;
+  --surface-card: #FFFFFF;
+  --border: #E4E6F1;
+  --border-strong: #CBCEE0;
+  --text-primary: #1A1C29;
+  --text-secondary: #5B5F73;
+  --text-tertiary: #8A8DA0;
+  --text-on-primary: #FFFFFF;
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "Cascadia Mono", "Roboto Mono", Consolas, Menlo, monospace;
+  --shadow-3: 0 20px 48px rgba(20,24,60,0.22), 0 4px 12px rgba(20,24,60,0.12);
+  --radius-md: 12px;
+  --radius-lg: 18px;
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+
+  all: initial;
+  font-family: var(--font-sans);
+  position: fixed;
+  inset: 0;
+  z-index: 2147483647;
+}
+.orbit-root[data-theme='dark'] {
+  --primary: #7C8CF0;
+  --primary-600: #96A3F5;
+  --primary-100: #262C55;
+  --accent: #35D6C4;
+  --accent-100: #103833;
+  --surface-card: #171A26;
+  --border: #2A2E42;
+  --border-strong: #3B3F58;
+  --text-primary: #F1F2F8;
+  --text-secondary: #A5A9C2;
+  --text-tertiary: #74788F;
+}
+
+.orbit-root * { box-sizing: border-box; font-family: var(--font-sans); }
+
+.orbit-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(10, 12, 22, 0.38);
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-end;
+  padding: 24px;
+  opacity: 0;
+  transition: opacity 160ms var(--ease);
+}
+.orbit-backdrop.visible { opacity: 1; }
+
+.orbit-card {
+  width: 380px;
+  max-width: calc(100vw - 48px);
+  background: var(--surface-card);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-3);
+  padding: 20px 22px 18px;
+  color: var(--text-primary);
+  transform: translateY(-8px);
+  opacity: 0;
+  transition: transform 180ms var(--ease), opacity 180ms var(--ease);
+}
+.orbit-backdrop.visible .orbit-card { transform: translateY(0); opacity: 1; }
+
+.orbit-head { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+.orbit-badge {
+  width: 32px; height: 32px; border-radius: 9px;
+  background: var(--primary-100); color: var(--primary);
+  display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+}
+.orbit-head h1 { font-size: 14.5px; font-weight: 700; margin: 0; letter-spacing: -0.01em; }
+.orbit-domain { font-family: var(--font-mono); font-size: 11px; color: var(--text-tertiary); margin: 2px 0 0; word-break: break-all; }
+
+.orbit-field { margin-bottom: 13px; }
+.orbit-field label { display: block; font-size: 12px; font-weight: 600; color: var(--text-secondary); margin-bottom: 6px; }
+
+.orbit-chip {
+  display: flex; align-items: center; gap: 8px;
+  background: var(--accent-100); border-radius: 8px; padding: 9px 11px;
+  font-weight: 600; font-size: 13px;
+}
+.orbit-chip .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex-shrink: 0; }
+.orbit-chip span:nth-child(2) { flex: 1; color: var(--text-primary); }
+.orbit-chip button {
+  border: none; background: transparent; color: var(--primary);
+  font-size: 11.5px; font-weight: 600; cursor: pointer; padding: 0;
+}
+
+.orbit-field input[type='text'], .orbit-field textarea {
+  width: 100%; padding: 8px 10px;
+  border: 1.5px solid var(--border-strong); border-radius: 8px;
+  font-size: 13px; background: var(--surface-card); color: var(--text-primary);
+}
+.orbit-field textarea { resize: vertical; }
+.orbit-field input:focus, .orbit-field textarea:focus { outline: 2px solid var(--primary); outline-offset: 1px; }
+
+.orbit-list { list-style: none; margin: 6px 0 0; padding: 0; max-height: 110px; overflow-y: auto; border-radius: 8px; }
+.orbit-list:not(:empty) { border: 1px solid var(--border); }
+.orbit-list li { padding: 8px 10px; font-size: 12.5px; cursor: pointer; display: flex; align-items: center; gap: 7px; border-bottom: 1px solid var(--border); color: var(--text-primary); }
+.orbit-list li:last-child { border-bottom: none; }
+.orbit-list li:hover { background: var(--primary-100); }
+.orbit-list .swatch { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+
+.orbit-hint { font-size: 11px; color: var(--text-tertiary); margin-top: 5px; min-height: 13px; }
+
+.orbit-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+.orbit-btn {
+  appearance: none; border: none; border-radius: 999px; padding: 8px 16px;
+  font-size: 12.5px; font-weight: 600; cursor: pointer;
+  transition: background 120ms var(--ease), transform 80ms var(--ease);
+}
+.orbit-btn:active { transform: scale(0.97); }
+.orbit-btn-primary { background: var(--primary); color: var(--text-on-primary); }
+.orbit-btn-primary:hover { background: var(--primary-600); }
+.orbit-btn-text { background: transparent; color: var(--text-secondary); }
+.orbit-btn-text:hover { color: var(--text-primary); }
+.orbit-btn[disabled] { opacity: 0.6; cursor: default; }
+
+.orbit-copy-btn {
+  border: none; background: transparent; color: var(--primary);
+  font-size: 11px; font-weight: 600; cursor: pointer; padding: 0; margin-top: 5px;
+}
+
+.orbit-footnote { margin-top: 10px; font-size: 10.5px; color: var(--text-tertiary); text-align: center; }
+
+.orbit-sublabel { font-weight: 400; color: var(--text-tertiary); text-transform: none; letter-spacing: 0; }
+
+.orbit-reference-note {
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  background: var(--surface, rgba(0,0,0,0.03));
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  white-space: pre-wrap;
+  max-height: 90px;
+  overflow-y: auto;
+  margin: 0;
+}

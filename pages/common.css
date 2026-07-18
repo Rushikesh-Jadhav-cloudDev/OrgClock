@@ -1,0 +1,138 @@
+/* common.css — shared design tokens for the OrgClock dashboard UI.
+   Material-Design-inspired, but with its own identity: an indigo/teal
+   palette and a monospace face reserved exclusively for time values, so
+   every duration and clock reading in the product reads as "measured
+   data" at a glance, distinct from ordinary text. */
+
+:root {
+  color-scheme: light;
+
+  /* --- Palette -------------------------------------------------- */
+  --primary: #2A3EB1;
+  --primary-600: #24379E;
+  --primary-100: #E4E7FA;
+  --accent: #00B8A9;      /* live / actively tracking */
+  --accent-100: #DAF6F2;
+  --warning: #F2A93B;     /* paused / idle */
+  --warning-100: #FCEED1;
+  --error: #E1523D;
+  --error-100: #FBE1DC;
+
+  --surface: #F5F6FB;
+  --surface-card: #FFFFFF;
+  --surface-raised: #FFFFFF;
+  --border: #E4E6F1;
+  --border-strong: #CBCEE0;
+
+  --text-primary: #1A1C29;
+  --text-secondary: #5B5F73;
+  --text-tertiary: #8A8DA0;
+  --text-on-primary: #FFFFFF;
+
+  /* --- Type -------------------------------------------------------- */
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "Cascadia Mono", "Roboto Mono", Consolas, Menlo, monospace;
+
+  /* --- Elevation ----------------------------------------------------- */
+  --shadow-1: 0 1px 2px rgba(20, 24, 60, 0.06), 0 1px 1px rgba(20, 24, 60, 0.04);
+  --shadow-2: 0 4px 14px rgba(20, 24, 60, 0.08), 0 1px 3px rgba(20, 24, 60, 0.06);
+  --shadow-3: 0 12px 32px rgba(20, 24, 60, 0.14), 0 2px 6px rgba(20, 24, 60, 0.08);
+
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 18px;
+
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+}
+
+[data-theme='dark'] {
+  color-scheme: dark;
+  --primary: #7C8CF0;
+  --primary-600: #96A3F5;
+  --primary-100: #262C55;
+  --accent: #35D6C4;
+  --accent-100: #103833;
+  --warning: #F2A93B;
+  --warning-100: #3A2C11;
+  --error: #F0796A;
+  --error-100: #3C1D18;
+
+  --surface: #0E1018;
+  --surface-card: #171A26;
+  --surface-raised: #1E2233;
+  --border: #2A2E42;
+  --border-strong: #3B3F58;
+
+  --text-primary: #F1F2F8;
+  --text-secondary: #A5A9C2;
+  --text-tertiary: #74788F;
+  --text-on-primary: #12142080;
+
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-2: 0 4px 16px rgba(0, 0, 0, 0.36);
+  --shadow-3: 0 16px 40px rgba(0, 0, 0, 0.5);
+}
+
+* { box-sizing: border-box; }
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--surface);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+h1, h2, h3, h4 { margin: 0; font-weight: 700; letter-spacing: -0.01em; }
+p { margin: 0; }
+
+button { font-family: inherit; cursor: pointer; }
+input, textarea, select { font-family: inherit; }
+
+.mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+
+/* ------------------------------------------------------------ buttons */
+.btn {
+  appearance: none;
+  border: none;
+  border-radius: 999px;
+  padding: 10px 20px;
+  font-size: 14px;
+  font-weight: 600;
+  transition: background 120ms var(--ease), transform 80ms var(--ease), box-shadow 120ms var(--ease);
+}
+.btn:active { transform: scale(0.97); }
+.btn-primary {
+  background: var(--primary);
+  color: var(--text-on-primary);
+  box-shadow: var(--shadow-1);
+}
+.btn-primary:hover { background: var(--primary-600); box-shadow: var(--shadow-2); }
+.btn-text {
+  background: transparent;
+  color: var(--text-secondary);
+  padding: 10px 14px;
+}
+.btn-text:hover { color: var(--text-primary); }
+.text-btn {
+  background: transparent;
+  border: none;
+  color: var(--primary);
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 2px 0;
+}
+.text-btn:hover { text-decoration: underline; }
+
+.hidden { display: none !important; }
+
+/* ------------------------------------------------------------ scrollbars */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 8px; border: 2px solid var(--surface); }
+::-webkit-scrollbar-track { background: transparent; }
+
+/* ------------------------------------------------------------ focus */
+:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
