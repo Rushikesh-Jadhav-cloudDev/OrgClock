@@ -5,30 +5,87 @@
 // chrome.storage directly using the same shapes as lib/storage.js.
 //
 // Owns the first-visit-of-the-day setup overlay, and (on request from the
-// action popup's "Log New Task") a follow-up overlay for retagging what
-// NEW sessions on this domain should count toward, without waiting for a
-// new day. There is deliberately no floating on-page button anymore — that
-// affordance lives entirely in the extension icon's popup now.
+// action popup's "Add Note") a follow-up overlay for adding a comment
+// and/or retagging which project NEW sessions on this domain should
+// count toward, without waiting for a new day. There is deliberately no
+// floating on-page button anymore — that affordance lives entirely in
+// the extension icon's popup now.
 //
-// Two things worth knowing about how this file is structured:
+// v6 removed the separate Task field. A comment is now always a
+// standalone, immediately-saved, timestamped note — not a "current
+// context" that persists forward and can go stale or get silently
+// overridden the way the old taskContext.comment (and the dashboard's
+// old dayNotes field) could. The Comments box always starts blank; "So
+// far today" below it is read-only history built straight from what's
+// actually been saved, so there's nothing that can fall out of sync
+// with it.
+//
+// Four things worth knowing about how this file is structured:
 //  1. ALL work — including the excluded-sites check — is deferred behind
 //     a configurable delay (Settings, default ~2.5s) after the page has
 //     finished loading. This keeps the extension from ever touching the
 //     page during its own initial render/bootstrap, which is both a
 //     performance concern and the likely cause of some Salesforce org
 //     pages failing to load correctly when this ran immediately.
-//  2. Every field in the overlay stops propagation on keyboard events.
-//     Because the overlay lives in a closed Shadow DOM, a host page's own
-//     global keyboard-shortcut handlers (Salesforce Lightning has several)
-//     see events retargeted to our outer container rather than the actual
-//     input — so a handler checking "is the user typing in a field?" can
-//     wrongly conclude they aren't, and swallow keystrokes meant for us.
+//  2. The overlay renders in LIGHT DOM, not a closed Shadow DOM. It used
+//     to use a closed shadow root for style isolation, but that had a
+//     real cost: while focus is inside a shadow tree, `document.
+//     activeElement` — as seen by any script OUTSIDE that tree — reports
+//     the shadow HOST element, never the actual focused input. Sites that
+//     gate their own global keyboard shortcuts on "is document.
+//     activeElement an editable field?" (a legitimate, common pattern —
+//     Salesforce Lightning included) would see a plain <div> and
+//     conclude it's safe to fire the shortcut, silently eating keys like
+//     "e"/"h" before they ever reached our field. Rendering in light DOM
+//     makes `document.activeElement` correctly point at our real <input>/
+//     <textarea>, so that class of check backs off correctly. The
+//     trade-off is losing shadow DOM's style isolation — mitigated by
+//     scoping every rule in overlay.css under `.orbit-root` plus
+//     `!important` on the properties most likely to collide with a
+//     host page's own global resets. This narrows the keystroke-eating
+//     problem substantially but can't be a 100% guarantee: if a site's
+//     shortcut handler fires unconditionally regardless of focus (some
+//     Lightning list-view shortcuts are reported to behave this way),
+//     no client-side trick in an extension can fully prevent it.
+//  3. Every field ALSO stops propagation on keyboard events in the BUBBLE
+//     phase only (guardKeyEvents, called on mount) — this is safe by
+//     construction since bubble phase only runs after the field has
+//     already processed the keystroke normally. v6.0.1 briefly added a
+//     CAPTURE-phase version of this on `document` too, which turned out
+//     to block typing in our own fields entirely once light DOM made
+//     `e.target` resolve correctly (see the comment where it used to
+//     live, just below, for the full story) — removed in v6.0.2.
+//  4. Saving a comment writes a note straight into `entries` here
+//     (mirroring lib/storage.js's addQuickNote — this file can't import
+//     it, see the dependency-free note above), rather than going through
+//     any persistent per-domain state. That's deliberate: it's what makes
+//     "every comment is independent and nothing can silently block a
+//     later one" true by construction, not just by convention.
 
 (function () {
   if (window.__orbitTimesheetInjected) return;
   window.__orbitTimesheetInjected = true;
 
   const domain = location.hostname.toLowerCase();
+
+  // v6.0.1 added a capture-phase guard here that called
+  // stopImmediatePropagation() on any keydown/keyup/keypress whose target
+  // was inside the overlay, intended to beat a host page's own capture-
+  // phase shortcut listener to the punch. That worked (sort of) back when
+  // the overlay lived in a closed Shadow DOM, because `e.target` as seen
+  // by a document-level listener was always retargeted to the shadow
+  // HOST — never the real input. Once the overlay moved to light DOM (see
+  // below), `e.target` correctly resolves to the actual focused field for
+  // EVERY keystroke, including completely normal typing — so that same
+  // guard started intercepting and halting propagation for our own
+  // fields' own keystrokes before they could be processed, breaking
+  // typing entirely. Removed. The field-level bubble-phase guard below
+  // (guardKeyEvents) is the safe version of this same idea: it only stops
+  // the event from bubbling further OUTWARD after the field has already
+  // handled it, so it can't block typing, and light DOM's fix to
+  // `document.activeElement` (see file header) is doing the real work of
+  // getting the host page's own shortcut logic to back off in the first
+  // place.
 
   // Mirrors lib/domains.js's built-in exclusions (kept in sync manually,
   // since content scripts can't import that module) — pages that are
@@ -55,8 +112,22 @@
     d.textContent = str == null ? '' : str;
     return d.innerHTML;
   }
+
+  let overlayStylesheetLoaded = false;
+  function ensureOverlayStylesheetLoaded() {
+    if (overlayStylesheetLoaded || document.getElementById('orbit-timesheet-overlay-styles')) {
+      overlayStylesheetLoaded = true;
+      return;
+    }
+    const link = document.createElement('link');
+    link.id = 'orbit-timesheet-overlay-styles';
+    link.rel = 'stylesheet';
+    link.href = chrome.runtime.getURL('pages/overlay.css');
+    document.head.appendChild(link);
+    overlayStylesheetLoaded = true;
+  }
   // Stops the host page's own keyboard-shortcut handlers from seeing (and
-  // potentially swallowing) keystrokes meant for our shadow-DOM fields —
+  // potentially swallowing) keystrokes meant for our overlay's fields —
   // see file header. Attach to every text input/textarea we create.
   function guardKeyEvents(el) {
     for (const type of ['keydown', 'keyup', 'keypress', 'input']) {
@@ -65,7 +136,7 @@
   }
 
   async function loadAll() {
-    return chrome.storage.local.get(['projects', 'domainMap', 'taskContext', 'entries', 'settings', 'excludedSites']);
+    return chrome.storage.local.get(['projects', 'domainMap', 'taskContext', 'entries', 'settings', 'excludedSites', 'alwaysPromptSites']);
   }
 
   function init() {
@@ -80,9 +151,6 @@
     if (BUILT_IN_EXCLUDED.includes(domain)) return;
 
     const dismissKey = `dismissed:${domain}`;
-    let dismissed = {};
-    try { dismissed = await chrome.storage.session.get(dismissKey); } catch { /* ignore */ }
-    if (dismissed[dismissKey]) return;
 
     const data = await loadAll();
     if (data.excludedSites && data.excludedSites[domain]) return;
@@ -90,20 +158,35 @@
     if (data.settings && data.settings.manuallyPaused) return;
 
     const today = todayStr();
+    const alwaysPrompt = Boolean(data.alwaysPromptSites && data.alwaysPromptSites[domain]);
     const alreadySetUpToday = Boolean(data.entries?.[today]?.[domain]);
+
+    if (alwaysPrompt) {
+      // Deliberately skips the "dismissed this session" check below — a
+      // site marked Always Show Popup (meeting tools, etc.) should ask
+      // every visit "regardless of previous selections," including a
+      // prior Not-now on an earlier visit today.
+      mountOverlay({ ...data, domain, today, dismissKey, mode: alreadySetUpToday ? 'add-note' : 'first-visit' });
+      return;
+    }
+
+    let dismissed = {};
+    try { dismissed = await chrome.storage.session.get(dismissKey); } catch { /* ignore */ }
+    if (dismissed[dismissKey]) return;
+
     if (!alreadySetUpToday) {
       mountOverlay({ ...data, domain, today, dismissKey, mode: 'first-visit' });
     }
-    // If already set up today, do nothing and wait quietly — retagging
-    // now happens only via the extension icon's "Log New Task" action.
+    // If already set up today, do nothing and wait quietly — adding a
+    // note now happens only via the extension icon's "Add Note" action.
   }
 
   chrome.runtime.onMessage.addListener((message) => {
     if (message?.type === 'ORBIT_RECHECK') {
       runChecks();
-    } else if (message?.type === 'FORCE_LOG_TASK') {
+    } else if (message?.type === 'ORBIT_ADD_NOTE') {
       loadAll().then((data) => {
-        mountOverlay({ ...data, domain, today: todayStr(), dismissKey: `dismissed:${domain}`, mode: 'switch-task' });
+        mountOverlay({ ...data, domain, today: todayStr(), dismissKey: `dismissed:${domain}`, mode: 'add-note' });
       });
     }
   });
@@ -112,7 +195,8 @@
 
   async function mountOverlay(ctx) {
     if (document.getElementById('orbit-timesheet-overlay-host')) return;
-    const { projects = {}, domainMap = {}, taskContext = {}, entries = {}, settings = {}, domain, today, mode } = ctx;
+    const { projects = {}, domainMap = {}, taskContext = {}, entries = {}, settings = {}, alwaysPromptSites = {}, domain, today, mode } = ctx;
+    const isAlwaysPrompt = Boolean(alwaysPromptSites[domain]);
 
     const theme = settings.theme || 'system';
     const resolvedTheme = theme === 'system'
@@ -121,11 +205,7 @@
 
     const host = document.createElement('div');
     host.id = 'orbit-timesheet-overlay-host';
-    const shadow = host.attachShadow({ mode: 'closed' });
-    const link = document.createElement('link');
-    link.rel = 'stylesheet';
-    link.href = chrome.runtime.getURL('pages/overlay.css');
-    shadow.appendChild(link);
+    ensureOverlayStylesheetLoaded();
 
     const root = document.createElement('div');
     root.className = 'orbit-root';
@@ -137,15 +217,6 @@
     const workingProjectId = currentCtx?.projectId || homeProjectId || null;
     const workingProject = workingProjectId ? projects[workingProjectId] : null;
 
-    // Fixing the "duplicate comments" bug: we used to prefill the comment
-    // box with the FULL joined history for this project, so re-saving it
-    // unchanged saved a growing blob as a "new" comment each time. Now we
-    // only prefill with the CURRENT task's own last comment when
-    // continuing that exact same task — otherwise the box starts empty,
-    // and existing notes are shown as read-only reference text instead.
-    const continuingSameTask = mode === 'switch-task' && currentCtx;
-    const existingTaskName = continuingSameTask ? (currentCtx.taskName || '') : '';
-    const existingComment = continuingSameTask ? (currentCtx.comment || '') : '';
     const referenceNote = summarizeExistingNotesForProject(entries, workingProjectId, today);
 
     root.innerHTML = `
@@ -156,7 +227,7 @@
               <svg viewBox="0 0 24 24" width="17" height="17"><circle cx="12" cy="12" r="9.25" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M12 7v5.2l3.4 2" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
             </div>
             <div>
-              <h1 id="orbitTitle">${mode === 'first-visit' ? 'New site detected' : 'Log a task'}</h1>
+              <h1 id="orbitTitle">${mode === 'first-visit' ? 'New site detected' : 'Add a note'}</h1>
               <p class="orbit-domain">${escapeHtml(domain)}</p>
             </div>
           </div>
@@ -176,7 +247,7 @@
           </div>
 
           <div class="orbit-field">
-            <label>Currently working on <span class="orbit-sublabel">(defaults to project above — change if this block is for a different project)</span></label>
+            <label>Currently working on <span class="orbit-sublabel">(change only if this is for a different project)</span></label>
             <div id="orbitWorkChip" class="orbit-chip" style="${workingProject ? '' : 'display:none;'}">
               <span class="dot" style="background:hsl(${workingProject ? workingProject.hue : 0},60%,50%)"></span>
               <span>${escapeHtml(workingProject ? workingProject.name : '')}</span>
@@ -189,28 +260,24 @@
             </div>
           </div>
 
-          <div class="orbit-field">
-            <label for="orbitTaskName">Task <span class="orbit-sublabel">(short label, e.g. "Validation Rule Fix" — leave blank for general project time)</span></label>
-            <input type="text" id="orbitTaskName" placeholder="What specifically?" value="${escapeHtml(existingTaskName)}" autocomplete="off" />
-          </div>
-
           ${referenceNote ? `<div class="orbit-field"><label>So far today</label><p class="orbit-reference-note">${escapeHtml(referenceNote)}</p></div>` : ''}
 
           <div class="orbit-field">
-            <label for="orbitComment">Comments ${continuingSameTask ? '<span class="orbit-sublabel">(continuing this task)</span>' : '<span class="orbit-sublabel">(new note for this task)</span>'}</label>
-            <textarea id="orbitComment" rows="3" placeholder="What are you working on right now?">${escapeHtml(existingComment)}</textarea>
+            <label for="orbitComment">Comments <span class="orbit-sublabel">(optional)</span></label>
+            <textarea id="orbitComment" rows="3" placeholder="What are you working on right now?"></textarea>
           </div>
 
           <div class="orbit-actions">
             <button type="button" class="orbit-btn orbit-btn-text" id="orbitCancelBtn">${mode === 'first-visit' ? 'Not now' : 'Cancel'}</button>
             <button type="button" class="orbit-btn orbit-btn-primary" id="orbitSaveBtn">${mode === 'first-visit' ? 'Start tracking' : 'Save'}</button>
           </div>
-          ${mode === 'first-visit' ? '<p class="orbit-footnote">Won\'t ask again today for this site.</p>' : ''}
+          ${mode === 'first-visit' && !isAlwaysPrompt ? '<p class="orbit-footnote">Won\'t ask again today for this site.</p>' : ''}
+          ${isAlwaysPrompt ? '<p class="orbit-footnote">Always asks on this site — change in Settings → Always Show Popup.</p>' : ''}
         </div>
       </div>
     `;
 
-    shadow.appendChild(root);
+    host.appendChild(root);
     document.body.appendChild(host);
     requestAnimationFrame(() => root.querySelector('.orbit-backdrop').classList.add('visible'));
 
@@ -223,7 +290,6 @@
 
     const backdrop = root.querySelector('.orbit-backdrop');
     const comment = root.querySelector('#orbitComment');
-    const taskNameInput = root.querySelector('#orbitTaskName');
 
     setupPicker({
       projects,
@@ -256,7 +322,7 @@
     });
 
     async function dismiss() {
-      if (mode === 'first-visit') {
+      if (mode === 'first-visit' && !isAlwaysPrompt) {
         try { await chrome.storage.session.set({ [ctx.dismissKey]: Date.now() }); } catch { /* best effort */ }
       }
       teardown();
@@ -293,14 +359,30 @@
       saveBtn.textContent = 'Saving…';
 
       domainMap[domain] = finalHomeId;
-      taskContext[domain] = {
-        projectId: finalWorkId,
-        taskName: taskNameInput.value.trim(),
-        comment: comment.value.trim(),
-        updatedAt: Date.now()
-      };
+      taskContext[domain] = { projectId: finalWorkId, updatedAt: Date.now() };
       entries[today] = entries[today] || {};
       entries[today][domain] = entries[today][domain] || { sessions: [] };
+
+      // A comment is always its own instant, timestamped note now — not
+      // something written into taskContext that persists forward and
+      // could get silently relabeled by a later edit (that was the old
+      // bug). Zero duration by design: it's a note, not tracked time.
+      const commentText = comment.value.trim();
+      const now = Date.now();
+      if (commentText) {
+        entries[today][domain].sessions.push({
+          id: newId('note'), start: now, end: now, projectId: finalWorkId,
+          comment: commentText, manual: true, isNote: true
+        });
+      }
+
+      // Bump recency so the picker can surface these first next time,
+      // instead of requiring the user to retype/re-search a project that
+      // already exists just because it's linked to a different domain
+      // (domain→project matching stays explicit-only by design — this
+      // just makes the manual pick faster, see setupPicker below).
+      if (projects[finalHomeId]) projects[finalHomeId].lastUsedAt = now;
+      if (projects[finalWorkId]) projects[finalWorkId].lastUsedAt = now;
 
       try {
         await chrome.storage.local.set({ projects, domainMap, taskContext, entries });
@@ -313,29 +395,71 @@
     });
   }
 
-  /** Read-only "so far today" reference text — never fed back into the editable box. */
-  function summarizeExistingNotesForProject(entries, projectId, today) {
-    if (!projectId) return '';
+  /**
+   * Collapses duplicate lines within a comment string. Mirrors
+   * lib/storage.js's dedupeCommentLines (duplicated here, not imported —
+   * this file is dependency-free by design, see header). Exists because
+   * pre-v6 versions could concatenate the SAME line into one comment
+   * string many times over via repeated same-task merges.
+   */
+  function dedupeCommentLines(text) {
+    if (!text) return text;
     const seen = new Set();
     const out = [];
-    const byDomain = entries[today] || {};
-    for (const container of Object.values(byDomain)) {
-      for (const s of container.sessions || []) {
-        if (s.projectId === projectId && s.comment && !seen.has(s.comment)) {
-          seen.add(s.comment);
-          const label = s.taskName ? `${s.taskName}: ${s.comment}` : s.comment;
-          out.push(label);
-        }
-      }
+    for (const rawLine of text.split('\n')) {
+      const line = rawLine.trim();
+      if (!line || seen.has(line)) continue;
+      seen.add(line);
+      out.push(line);
     }
     return out.join('\n');
+  }
+
+  /**
+   * Read-only "so far today" reference text — never fed back into the
+   * editable box. This is now literally the complete comment history for
+   * the project today: every session's comment (auto-tracked or a note),
+   * in chronological order, each with a time so a run of similar-looking
+   * entries stays distinguishable.
+   */
+  function summarizeExistingNotesForProject(entries, projectId, today) {
+    if (!projectId) return '';
+    const byDomain = entries[today] || {};
+    const items = [];
+    for (const container of Object.values(byDomain)) {
+      for (const s of container.sessions || []) {
+        if (s.projectId !== projectId || !s.comment) continue;
+        const trimmed = dedupeCommentLines(s.comment.trim());
+        if (!trimmed) continue;
+        items.push({ ts: s.isNote ? s.start : s.end, text: trimmed });
+      }
+    }
+    items.sort((a, b) => a.ts - b.ts);
+    const seen = new Set();
+    const out = [];
+    for (const item of items) {
+      const label = `${formatClockLocal(item.ts)} — ${item.text}`;
+      // Dedupe on the LABEL actually shown (trimmed text + time), not
+      // just raw comment text — two sessions can have visually-identical
+      // text that differs only by trailing/leading whitespace (e.g. a
+      // retry after noticing dropped keystrokes).
+      if (seen.has(label)) continue;
+      seen.add(label);
+      out.push(label);
+    }
+    return out.join('\n');
+  }
+
+  function formatClockLocal(ts) {
+    return new Date(ts).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
   }
 
   function findOrCreate(projects, typedName) {
     const existing = Object.values(projects).find((p) => p.name.toLowerCase() === typedName.toLowerCase());
     if (existing) return existing.id;
     const id = newId('proj');
-    projects[id] = { id, name: typedName, category: 'Admin / Other', hue: Math.floor(Math.random() * 360), createdAt: Date.now(), archived: false };
+    const now = Date.now();
+    projects[id] = { id, name: typedName, category: '', hue: Math.floor(Math.random() * 360), createdAt: now, lastUsedAt: now, archived: false };
     return id;
   }
 
@@ -344,9 +468,14 @@
 
     function renderList(query) {
       const q = query.trim().toLowerCase();
+      // Recently-used first (not alphabetical) so the project you're
+      // probably after — e.g. one already linked to several other
+      // domains for the same org — is at the top without typing. This is
+      // purely a UI convenience; it never auto-LINKS a domain, it just
+      // orders the manual picker (domain→project linking stays explicit).
       const matches = Object.values(projects)
         .filter((p) => !p.archived && p.name.toLowerCase().includes(q))
-        .sort((a, b) => a.name.localeCompare(b.name))
+        .sort((a, b) => (b.lastUsedAt || b.createdAt || 0) - (a.lastUsedAt || a.createdAt || 0))
         .slice(0, 6);
       listEl.innerHTML = '';
       for (const p of matches) {
@@ -373,7 +502,14 @@
 
     if (pickerEl.style.display !== 'none') {
       searchEl.value = initialQuery;
-      renderList(initialQuery);
+      // Render against an EMPTY query on mount, not the guessed initial
+      // text — the guess (e.g. "synlawn2025" from a sandbox subdomain)
+      // very often won't substring-match an existing project's real name
+      // (e.g. "Synlawn"), which used to leave the list empty and quietly
+      // default to creating a near-duplicate project on Save unless the
+      // user noticed and manually re-searched. Showing the real recent
+      // projects up front makes the existing one a visible one-click pick.
+      renderList('');
     }
     searchEl.addEventListener('input', (e) => renderList(e.target.value));
     changeBtn?.addEventListener('click', () => {

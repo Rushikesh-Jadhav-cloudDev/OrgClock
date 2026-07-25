@@ -3,12 +3,15 @@
 import {
   getProjects, getDomainMap, getTaskContext, getEntries, getArchives,
   getSettings, updateSettings, getActiveSession, getManualAdjustments,
-  getDayNotes, setDayNote, linkDomainToProject, editSession, deleteSession,
+  linkDomainToProject, editSession, deleteSession,
   mergeSessions, addManualSession, setManualAdjustment, renameProject,
   setProjectCategory, restoreArchivedWeek, createProject, flattenDaySessions,
-  groupDayByProject, groupDayByTask, consolidateProjectSessions, getExcludedSites,
+  groupDayByProject, getDayCommentLog, consolidateProjectSessions, getExcludedSites,
   addExcludedSite, removeExcludedSite, getGlobalActivity, getGlobalActiveSession,
-  getAllDismissedThisSession, clearDismissal, getAllCategories, addCustomCategory
+  getAllDismissedThisSession, clearDismissal, getAllCategories, addCustomCategory,
+  renameCategory, deleteCategory, deleteProjectPermanently, getAlwaysPromptSites,
+  addAlwaysPromptSite, removeAlwaysPromptSite, deleteSessionsInRange, deleteSessionsOlderThan,
+  exportFullBackup, importFullBackup, addQuickNote, MANUAL_NOTE_DOMAIN
 } from '../lib/storage.js';
 import {
   dateStr, parseDateStr, weekStartStr, weekEndStr, friendlyDate, friendlyWeekRange,
@@ -24,10 +27,10 @@ let state = {
   entries: {},
   archives: {},
   manualAdjustments: {},
-  dayNotes: {},
   settings: {},
   activeSession: null,
   excludedSites: {},
+  alwaysPromptSites: {},
   globalActivity: {},
   globalActiveSession: null
 };
@@ -58,18 +61,28 @@ const el = {
   autoTrackToggle: $('autoTrackToggle'), autoTrackValue: $('autoTrackValue'),
   themeSelect: $('themeSelect'),
   settingsProjectList: $('settingsProjectList'),
+  categoriesList: $('categoriesList'),
   newCategoryInput: $('newCategoryInput'), addCategoryBtn: $('addCategoryBtn'),
   exportWeekBtn: $('exportWeekBtn'), exportAllBtn: $('exportAllBtn'),
   exportWeekDetailBtn: $('exportWeekDetailBtn'), exportAllDetailBtn: $('exportAllDetailBtn'),
   exportSessionsBtn: $('exportSessionsBtn'),
   excludedSitesList: $('excludedSitesList'), newExcludeInput: $('newExcludeInput'),
   addExcludeBtn: $('addExcludeBtn'), addExcludeHint: $('addExcludeHint'),
+  alwaysPromptSitesList: $('alwaysPromptSitesList'), newAlwaysPromptInput: $('newAlwaysPromptInput'),
+  addAlwaysPromptBtn: $('addAlwaysPromptBtn'), addAlwaysPromptHint: $('addAlwaysPromptHint'),
+  deleteLastWeekBtn: $('deleteLastWeekBtn'), deleteLastMonthBtn: $('deleteLastMonthBtn'),
+  deleteOlderMonthsInput: $('deleteOlderMonthsInput'), deleteOlderMonthsBtn: $('deleteOlderMonthsBtn'),
+  deleteRangeStart: $('deleteRangeStart'), deleteRangeEnd: $('deleteRangeEnd'),
+  deleteCustomRangeBtn: $('deleteCustomRangeBtn'), deleteDataHint: $('deleteDataHint'),
+  downloadBackupBtn: $('downloadBackupBtn'), restoreBackupBtn: $('restoreBackupBtn'),
+  restoreBackupInput: $('restoreBackupInput'), backupHint: $('backupHint'),
   pendingPromptsField: $('pendingPromptsField'), pendingPromptsList: $('pendingPromptsList'),
   viewTabs: document.querySelectorAll('.view-tab'),
   timelineView: $('timelineView'), timelineTrack: $('timelineTrack'),
   timelineDateLabel: $('timelineDateLabel'), timelinePrevDay: $('timelinePrevDay'), timelineNextDay: $('timelineNextDay'),
   sessionSummaryView: $('sessionSummaryView'), sessionSummaryList: $('sessionSummaryList'),
   sessionsDateLabel: $('sessionsDateLabel'), sessionsPrevDay: $('sessionsPrevDay'), sessionsNextDay: $('sessionsNextDay'),
+  notesCopyBtn: $('notesCopyBtn'),
   timesheetView: $('timesheetView'), tsWeekLabel: $('tsWeekLabel'),
   tsPrevWeek: $('tsPrevWeek'), tsNextWeek: $('tsNextWeek'), tsCopyBtn: $('tsCopyBtn'),
   tsHeadRow: $('tsHeadRow'), tsBody: $('tsBody'), tsFootRow: $('tsFootRow')
@@ -78,13 +91,13 @@ const el = {
 // ------------------------------------------------------------------ init
 
 async function loadState() {
-  const [projects, domainMap, taskContext, entries, archives, manualAdjustments, dayNotes,
-    settings, activeSession, excludedSites, globalActivity, globalActiveSession, categories] = await Promise.all([
+  const [projects, domainMap, taskContext, entries, archives, manualAdjustments,
+    settings, activeSession, excludedSites, alwaysPromptSites, globalActivity, globalActiveSession, categories] = await Promise.all([
     getProjects(), getDomainMap(), getTaskContext(), getEntries(), getArchives(), getManualAdjustments(),
-    getDayNotes(), getSettings(), getActiveSession(), getExcludedSites(), getGlobalActivity(), getGlobalActiveSession(),
+    getSettings(), getActiveSession(), getExcludedSites(), getAlwaysPromptSites(), getGlobalActivity(), getGlobalActiveSession(),
     getAllCategories()
   ]);
-  state = { projects, domainMap, taskContext, entries, archives, manualAdjustments, dayNotes, settings, activeSession, excludedSites, globalActivity, globalActiveSession };
+  state = { projects, domainMap, taskContext, entries, archives, manualAdjustments, settings, activeSession, excludedSites, alwaysPromptSites, globalActivity, globalActiveSession };
   allCategories = categories;
 }
 
@@ -144,13 +157,6 @@ function getManualAdjustmentsForDate(date) {
   }
   return {};
 }
-function getDayNotesForDate(date) {
-  if (state.dayNotes[date]) return state.dayNotes[date];
-  for (const archive of Object.values(state.archives)) {
-    if (archive.entries[date]) return archive.dayNotes?.[date] || {};
-  }
-  return {};
-}
 function isArchivedDate(date) {
   if (state.entries[date]) return null;
   for (const [weekStart, archive] of Object.entries(state.archives)) {
@@ -159,7 +165,7 @@ function isArchivedDate(date) {
   return null;
 }
 function projectGroupsForDate(date) {
-  return groupDayByProject(getByDomainForDate(date), getManualAdjustmentsForDate(date), getDayNotesForDate(date));
+  return groupDayByProject(getByDomainForDate(date), getManualAdjustmentsForDate(date));
 }
 function shiftDateStr(ds, deltaDays) {
   const d = parseDateStr(ds);
@@ -432,25 +438,50 @@ function buildArchivedProjectView(group, weekStart) {
 function buildLiveProjectEditView(date, group) {
   const wrap = document.createElement('div');
 
-  // --- Primary: the overall comment for this project today. This is the
-  // one place meant for day-to-day editing — individual session comments
-  // (auto-recorded per switch) live underneath in Advanced for provenance,
-  // but this note is what shows up in history cards, the timesheet, and
-  // Replicon copy.
-  const noteField = document.createElement('div');
-  noteField.className = 'field';
-  noteField.innerHTML = `<label for="dayNoteArea">Comments <span style="font-weight:400;color:var(--text-tertiary)">(overall notes for this project today)</span></label>
-    <textarea id="dayNoteArea" rows="4">${escapeHtml(group.displayNote)}</textarea>`;
-  let noteTimer;
-  noteField.querySelector('#dayNoteArea').addEventListener('input', (e) => {
-    clearTimeout(noteTimer);
-    const val = e.target.value;
-    noteTimer = setTimeout(async () => {
-      await setDayNote(date, group.projectId, val);
-      await loadState();
-      renderHistory(); renderTimesheet();
-    }, 500);
+  // --- Add a note: always blank, saved instantly as its own standalone
+  // timestamped entry — never a persistent field something else can
+  // silently override or block. That silent-override was exactly the bug
+  // (the old single "overall notes" field permanently won over anything
+  // added afterward from the popup).
+  const addNoteField = document.createElement('div');
+  addNoteField.className = 'field';
+  addNoteField.innerHTML = `<label for="quickNoteArea">Add a note</label>
+    <textarea id="quickNoteArea" rows="2" placeholder="What's happening right now?"></textarea>
+    <div style="display:flex;justify-content:flex-end;margin-top:6px;">
+      <button type="button" class="btn btn-primary" id="quickNoteAddBtn">Add</button>
+    </div>`;
+  addNoteField.querySelector('#quickNoteAddBtn').addEventListener('click', async () => {
+    const textarea = addNoteField.querySelector('#quickNoteArea');
+    const text = textarea.value.trim();
+    if (!text) return;
+    await addQuickNote(date, MANUAL_NOTE_DOMAIN, group.projectId, text);
+    await loadState();
+    reopenThisProjectModal(date, group.projectId);
   });
+
+  // --- Today's full comment history, in order. Always complete — every
+  // note shows up, nothing here can silently block a later one.
+  const historyField = document.createElement('div');
+  historyField.className = 'field';
+  const log = getDayCommentLog(getByDomainForDate(date)).filter((n) => n.projectId === group.projectId);
+  historyField.innerHTML = `<label>Today's notes${log.length ? ` <span style="font-weight:400;color:var(--text-tertiary)">(${log.length})</span>` : ''}</label>`;
+  const historyList = document.createElement('div');
+  historyList.className = 'note-history';
+  for (const entry of log) {
+    const row = document.createElement('div');
+    row.className = 'note-entry';
+    row.innerHTML = `<span class="mono note-entry-time">${formatClock(entry.ts)}</span>
+      <span class="note-entry-text">${escapeHtml(entry.comment)}</span>
+      <button type="button" class="row-btn" title="Delete note">✕</button>`;
+    row.querySelector('button').addEventListener('click', async () => {
+      await deleteSession(date, entry.domain, entry.id);
+      await loadState();
+      reopenThisProjectModal(date, group.projectId);
+    });
+    historyList.appendChild(row);
+  }
+  if (!log.length) historyList.innerHTML = '<p style="font-size:12.5px;color:var(--text-tertiary);">No notes yet today for this project.</p>';
+  historyField.appendChild(historyList);
 
   // --- Linked sites (permanent home project per domain)
   const sitesField = document.createElement('div');
@@ -459,6 +490,7 @@ function buildLiveProjectEditView(date, group) {
   const sitesList = document.createElement('div');
   sitesList.style.cssText = 'display:flex;flex-direction:column;gap:6px;';
   for (const domain of group.domains) {
+    if (domain === MANUAL_NOTE_DOMAIN) continue; // not a real site, nothing to relink
     const homeId = state.domainMap[domain];
     const homeProject = homeId ? state.projects[homeId] : null;
     const row = document.createElement('div');
@@ -472,11 +504,14 @@ function buildLiveProjectEditView(date, group) {
   }
   sitesField.appendChild(sitesList);
 
-  // --- Advanced: individual sessions (collapsed by default)
+  // --- Advanced: individual tracked sessions (collapsed by default).
+  // Notes (isNote) are excluded here — they live in "Today's notes"
+  // above; this table is genuine tracked time only.
+  const trackedSessions = () => group.sessions.filter((s) => !s.isNote);
   const details = document.createElement('details');
   details.className = 'advanced-details';
   const summary = document.createElement('summary');
-  summary.textContent = `Advanced: ${group.sessions.length} raw session${group.sessions.length === 1 ? '' : 's'} & times`;
+  summary.textContent = `Advanced: ${trackedSessions().length} raw session${trackedSessions().length === 1 ? '' : 's'} & times`;
   details.appendChild(summary);
 
   const table = document.createElement('div');
@@ -484,7 +519,7 @@ function buildLiveProjectEditView(date, group) {
 
   const toolbar = document.createElement('div');
   toolbar.className = 'session-toolbar';
-  const domainOptions = group.domains.map((d) => `<option value="${escapeHtml(d)}">${escapeHtml(d)}</option>`).join('');
+  const domainOptions = group.domains.filter((d) => d !== MANUAL_NOTE_DOMAIN).map((d) => `<option value="${escapeHtml(d)}">${escapeHtml(d)}</option>`).join('');
   toolbar.innerHTML = `
     <select id="addSessionDomain" style="font-size:12px;padding:4px 6px;border-radius:6px;border:1px solid var(--border-strong);">${domainOptions}</select>
     <button type="button" class="btn btn-text" id="addSessionBtn">+ Add manual session</button>
@@ -492,7 +527,7 @@ function buildLiveProjectEditView(date, group) {
     <button type="button" class="btn btn-text" id="consolidateBtn">Consolidate nearby sessions</button>
   `;
 
-  let localSessions = group.sessions.map((s) => ({ ...s }));
+  let localSessions = trackedSessions().map((s) => ({ ...s }));
 
   function renderSessions() {
     table.innerHTML = '';
@@ -505,12 +540,10 @@ function buildLiveProjectEditView(date, group) {
         <input type="datetime-local" class="startInput" value="${toLocalInputValue(s.start)}" />
         <input type="datetime-local" class="endInput" value="${toLocalInputValue(s.end)}" />
         <span class="session-duration mono">${formatDuration(s.end - s.start)}</span>
-        <input type="text" class="taskInput" placeholder="task" value="${escapeHtml(s.taskName || '')}" title="Task name for this session" />
         <span class="manual-tag" title="${escapeHtml(s.domain)}">${escapeHtml(s.domain.split('.')[0])}${s.manual ? ' · manual' : ''}</span>
         <button type="button" class="row-btn" title="Delete session">✕</button>
       `;
       const [checkbox, startInput, endInput] = row.querySelectorAll('input[type="datetime-local"], input[type="checkbox"]');
-      const taskInput = row.querySelector('.taskInput');
       const delBtn = row.querySelector('.row-btn');
 
       const commit = async () => {
@@ -522,11 +555,6 @@ function buildLiveProjectEditView(date, group) {
       };
       startInput.addEventListener('change', commit);
       endInput.addEventListener('change', commit);
-      taskInput.addEventListener('change', async () => {
-        await editSession(date, s.domain, s.id, { taskName: taskInput.value.trim() });
-        await loadState();
-        refreshGroupAndRerender();
-      });
       delBtn.addEventListener('click', async () => {
         if (!confirm('Delete this session?')) return;
         await deleteSession(date, s.domain, s.id);
@@ -573,8 +601,8 @@ function buildLiveProjectEditView(date, group) {
 
   function refreshGroupAndRerender() {
     const fresh = projectGroupsForDate(date).find((g) => g.projectId === group.projectId);
-    localSessions = fresh ? fresh.sessions.map((s) => ({ ...s })) : [];
-    group.sessions = localSessions;
+    group.sessions = fresh ? fresh.sessions : [];
+    localSessions = trackedSessions().map((s) => ({ ...s }));
     summary.textContent = `Advanced: ${localSessions.length} raw session${localSessions.length === 1 ? '' : 's'} & times`;
     renderSessions();
     renderAll();
@@ -606,7 +634,7 @@ function buildLiveProjectEditView(date, group) {
     <button type="button" class="btn btn-primary" id="doneBtn">Done</button>
   `;
   footer.querySelector('#deleteEntryBtn').addEventListener('click', async () => {
-    if (!confirm('Delete all tracked time for this project on this day? This cannot be undone.')) return;
+    if (!confirm('Delete all tracked time and notes for this project on this day? This cannot be undone.')) return;
     for (const s of group.sessions) await deleteSession(date, s.domain, s.id);
     await loadState();
     renderAll();
@@ -614,8 +642,19 @@ function buildLiveProjectEditView(date, group) {
   });
   footer.querySelector('#doneBtn').addEventListener('click', closeEntryModal);
 
-  wrap.append(noteField, sitesField, details, adjField, footer);
+  wrap.append(addNoteField, historyField, sitesField, details, adjField, footer);
   return wrap;
+}
+
+/** Re-finds the project's fresh group after a note add/delete and re-opens the modal on it, so the edit stays visible without a jarring full close/reopen. */
+function reopenThisProjectModal(date, projectId) {
+  renderAll();
+  const fresh = projectGroupsForDate(date).find((g) => g.projectId === projectId);
+  if (fresh) {
+    openProjectModal(date, fresh, { archived: false, weekStart: null });
+  } else {
+    closeEntryModal();
+  }
 }
 
 function openRelinkPicker(anchorBtn, domain) {
@@ -674,28 +713,28 @@ function renderSessionSummary() {
   if (currentView !== 'sessions') return;
   el.sessionsDateLabel.textContent = friendlyDate(sessionSummaryDate, { noRelative: true }) + (sessionSummaryDate === dateStr() ? ' (Today)' : '');
   const byDomain = getByDomainForDate(sessionSummaryDate);
-  const tasks = groupDayByTask(byDomain);
+  const notes = getDayCommentLog(byDomain);
 
   el.sessionSummaryList.innerHTML = '';
-  if (!tasks.length) {
-    el.sessionSummaryList.innerHTML = '<p style="font-size:13px;color:var(--text-tertiary);padding:20px 4px;">No tracked time on this day.</p>';
+  if (!notes.length) {
+    el.sessionSummaryList.innerHTML = '<p style="font-size:13px;color:var(--text-tertiary);padding:20px 4px;">No notes on this day.</p>';
     return;
   }
-  for (const t of tasks) {
-    const project = state.projects[t.projectId];
+  for (const n of notes) {
+    const project = state.projects[n.projectId];
     const block = document.createElement('div');
     block.className = 'task-block';
     block.style.setProperty('--entry-hue', project ? `hsl(${project.hue}, 60%, 50%)` : 'var(--primary)');
     block.innerHTML = `
       <div class="task-main">
-        <p class="task-title">${escapeHtml(project ? project.name : '(unknown)')}${t.taskName ? ` <span class="task-project">– ${escapeHtml(t.taskName)}</span>` : ' <span class="task-project">– general</span>'}</p>
-        <p class="task-sites">${escapeHtml(t.domains.join(', '))} · ${t.sessions.length} session${t.sessions.length === 1 ? '' : 's'}</p>
+        <p class="task-title">${escapeHtml(project ? project.name : '(unknown)')}</p>
+        <p class="task-sites">${escapeHtml(n.comment)}</p>
       </div>
-      <span class="task-duration">${formatDuration(t.totalMs)}</span>
+      <span class="task-duration mono" style="font-size:12.5px;font-weight:600;">${formatClock(n.ts)}</span>
     `;
     block.addEventListener('click', () => {
       const projectGroups = projectGroupsForDate(sessionSummaryDate);
-      const group = projectGroups.find((g) => g.projectId === t.projectId);
+      const group = projectGroups.find((g) => g.projectId === n.projectId);
       if (group) openProjectModal(sessionSummaryDate, group, { archived: Boolean(isArchivedDate(sessionSummaryDate)), weekStart: isArchivedDate(sessionSummaryDate) });
     });
     el.sessionSummaryList.appendChild(block);
@@ -800,7 +839,7 @@ function copyTimesheetForReplicon(days, projectIds, perDayGroups, dayTotals, gra
   const tsv = rows.map((r) => r.map((c) => String(c).replace(/\t/g, ' ').replace(/\n/g, ' ')).join('\t')).join('\n');
   navigator.clipboard.writeText(tsv).then(() => {
     el.tsCopyBtn.textContent = 'Copied!';
-    setTimeout(() => { el.tsCopyBtn.textContent = 'Copy for Replicon'; }, 1500);
+    setTimeout(() => { el.tsCopyBtn.textContent = 'Copy'; }, 1500);
   }).catch(() => {
     alert('Could not copy automatically — select and copy the table manually.');
   });
@@ -810,6 +849,11 @@ function copyTimesheetForReplicon(days, projectIds, perDayGroups, dayTotals, gra
 
 function populateCategorySelect(selectEl, selected) {
   selectEl.innerHTML = '';
+  const blank = document.createElement('option');
+  blank.value = '';
+  blank.textContent = '(none)';
+  if (!selected) blank.selected = true;
+  selectEl.appendChild(blank);
   for (const c of allCategories) {
     const opt = document.createElement('option');
     opt.value = c;
@@ -836,9 +880,15 @@ function renderSettingsPanel() {
   const projectList = Object.values(state.projects).sort((a, b) => a.name.localeCompare(b.name));
   for (const p of projectList) {
     const li = document.createElement('li');
-    li.innerHTML = `<span class="swatch" style="background:hsl(${p.hue},60%,50%)"></span>
-      <input type="text" value="${escapeHtml(p.name)}" data-id="${p.id}" style="flex:1;" />
-      <select class="category-select" data-id="${p.id}"></select>`;
+    li.innerHTML = `
+      <div class="proj-row-top">
+        <span class="swatch" style="background:hsl(${p.hue},60%,50%)"></span>
+        <input type="text" value="${escapeHtml(p.name)}" data-id="${p.id}" style="flex:1;" />
+      </div>
+      <div class="proj-row-bottom">
+        <select class="category-select" data-id="${p.id}"></select>
+        <button type="button" class="remove-btn" data-id="${p.id}">Delete permanently</button>
+      </div>`;
     const input = li.querySelector('input');
     const select = li.querySelector('select');
     populateCategorySelect(select, p.category);
@@ -856,14 +906,76 @@ function renderSettingsPanel() {
       await loadState();
       renderHistory(); renderTimesheet();
     });
+    li.querySelector('.remove-btn').addEventListener('click', async () => {
+      const confirmed = confirm(
+        `Permanently delete "${p.name}"? This removes ALL its tracked time (live and archived), everywhere. This cannot be undone.`
+      );
+      if (!confirmed) return;
+      await deleteProjectPermanently(p.id);
+      await loadState();
+      renderAll();
+    });
     el.settingsProjectList.appendChild(li);
   }
   if (!projectList.length) {
     el.settingsProjectList.innerHTML = '<p style="font-size:12.5px;color:var(--text-tertiary)">No projects yet — they appear here once you set up your first site.</p>';
   }
 
+  renderCategoriesList();
   renderExcludedSitesList();
+  renderAlwaysPromptSitesList();
   renderPendingPrompts();
+}
+
+function renderCategoriesList() {
+  el.categoriesList.innerHTML = '';
+  for (const c of allCategories) {
+    const li = document.createElement('li');
+    li.innerHTML = `<input type="text" value="${escapeHtml(c)}" data-original="${escapeHtml(c)}" style="flex:1;" />
+      <button type="button" class="remove-btn" data-name="${escapeHtml(c)}">Delete</button>`;
+    const input = li.querySelector('input');
+    let t;
+    input.addEventListener('input', () => {
+      clearTimeout(t);
+      t = setTimeout(async () => {
+        const original = input.dataset.original;
+        const next = input.value.trim();
+        if (!next || next === original) return;
+        await renameCategory(original, next);
+        await loadState();
+        renderSettingsPanel();
+      }, 600);
+    });
+    li.querySelector('.remove-btn').addEventListener('click', async () => {
+      if (!confirm(`Delete category "${c}"? Projects using it will show "(none)" — their tracked time is untouched.`)) return;
+      await deleteCategory(c);
+      await loadState();
+      renderSettingsPanel();
+    });
+    el.categoriesList.appendChild(li);
+  }
+  if (!allCategories.length) {
+    el.categoriesList.innerHTML = '<p style="font-size:12.5px;color:var(--text-tertiary)">No categories yet — add one below, or leave projects uncategorized.</p>';
+  }
+}
+
+function renderAlwaysPromptSitesList() {
+  el.alwaysPromptSitesList.innerHTML = '';
+  const domains = Object.keys(state.alwaysPromptSites).sort();
+  for (const domain of domains) {
+    const li = document.createElement('li');
+    li.innerHTML = `<span style="flex:1;font-family:var(--font-mono);font-size:11.5px;">${escapeHtml(domain)}</span>
+      <button type="button" class="remove-btn" data-domain="${escapeHtml(domain)}">Remove</button>`;
+    li.querySelector('.remove-btn').addEventListener('click', async () => {
+      await removeAlwaysPromptSite(domain);
+      await loadState();
+      renderAlwaysPromptSitesList();
+    });
+    el.alwaysPromptSitesList.appendChild(li);
+  }
+  if (!domains.length) {
+    el.alwaysPromptSitesList.innerHTML = '<p style="font-size:12.5px;color:var(--text-tertiary)">No sites set to always ask yet.</p>';
+  }
 }
 
 function renderExcludedSitesList() {
@@ -912,16 +1024,16 @@ async function promptAgain(domain) {
 
 /** One row per session — full detail, for audit purposes. */
 function buildDetailCsvRows(scope) {
-  const rows = [['Date', 'Day', 'Project', 'Task', 'Category', 'Site', 'Comment', 'Start', 'End', 'Duration (min)', 'Manual']];
+  const rows = [['Date', 'Day', 'Project', 'Category', 'Site', 'Comment', 'Start', 'End', 'Duration (min)', 'Manual', 'Note']];
   const pushDate = (date, byDomain) => {
     const sessions = flattenDaySessions(byDomain).sort((a, b) => a.start - b.start);
     const dow = parseDateStr(date).toLocaleDateString(undefined, { weekday: 'long' });
     for (const s of sessions) {
       const project = state.projects[s.projectId];
       rows.push([
-        date, dow, project?.name || '', s.taskName || '', project?.category || '', s.domain, s.comment || '',
+        date, dow, project?.name || '', project?.category || '', s.domain, s.comment || '',
         new Date(s.start).toLocaleString(), new Date(s.end).toLocaleString(),
-        String(Math.round((s.end - s.start) / 60000)), s.manual ? 'yes' : 'no'
+        String(Math.round((s.end - s.start) / 60000)), s.manual ? 'yes' : 'no', s.isNote ? 'yes' : 'no'
       ]);
     }
   };
@@ -967,18 +1079,18 @@ function buildDailySummaryCsvRows(scope) {
   return rows;
 }
 
-/** One row per (date, project, task) — matches the Session Summary view. */
-function buildSessionSummaryCsvRows() {
-  const rows = [['Date', 'Day', 'Project', 'Task', 'Sites', 'Duration (min)']];
+/** One row per note — every comment recorded, in chronological order. Matches the Notes view. */
+function buildNotesLogCsvRows() {
+  const rows = [['Date', 'Day', 'Time', 'Project', 'Site', 'Comment']];
   const archivedDates = Object.values(state.archives).flatMap((a) => Object.keys(a.entries));
   const dates = [...new Set([...Object.keys(state.entries), ...archivedDates])].sort();
   for (const date of dates) {
     const byDomain = getByDomainForDate(date);
-    const tasks = groupDayByTask(byDomain);
+    const notes = getDayCommentLog(byDomain);
     const dow = parseDateStr(date).toLocaleDateString(undefined, { weekday: 'long' });
-    for (const t of tasks) {
-      const project = state.projects[t.projectId];
-      rows.push([date, dow, project?.name || '', t.taskName || '', t.domains.join('; '), String(Math.round(t.totalMs / 60000))]);
+    for (const n of notes) {
+      const project = state.projects[n.projectId];
+      rows.push([date, dow, new Date(n.ts).toLocaleTimeString(), project?.name || '', n.domain, n.comment]);
     }
   }
   return rows;
@@ -1025,7 +1137,7 @@ function wireStaticEvents() {
   el.exportAllBtn.addEventListener('click', () => exportCsv(buildDailySummaryCsvRows('all'), 'daily-summary-all'));
   el.exportWeekDetailBtn.addEventListener('click', () => exportCsv(buildDetailCsvRows('week'), 'detail-week'));
   el.exportAllDetailBtn.addEventListener('click', () => exportCsv(buildDetailCsvRows('all'), 'detail-all'));
-  el.exportSessionsBtn.addEventListener('click', () => exportCsv(buildSessionSummaryCsvRows(), 'by-task'));
+  el.exportSessionsBtn.addEventListener('click', () => exportCsv(buildNotesLogCsvRows(), 'notes-log'));
 
   el.themeBtn.addEventListener('click', async () => {
     const order = ['system', 'light', 'dark'];
@@ -1082,6 +1194,36 @@ function wireStaticEvents() {
   el.sessionsPrevDay.addEventListener('click', () => { sessionSummaryDate = shiftDateStr(sessionSummaryDate, -1); renderSessionSummary(); });
   el.sessionsNextDay.addEventListener('click', () => { sessionSummaryDate = shiftDateStr(sessionSummaryDate, 1); renderSessionSummary(); });
 
+  el.notesCopyBtn.addEventListener('click', () => {
+    const notes = getDayCommentLog(getByDomainForDate(sessionSummaryDate));
+    if (!notes.length) {
+      el.notesCopyBtn.textContent = 'Nothing to copy';
+      setTimeout(() => { el.notesCopyBtn.textContent = 'Copy'; }, 1500);
+      return;
+    }
+    // Grouped by project, chronological within each — this is "today's
+    // comments in one place" ready to paste into Replicon or similar,
+    // rather than having to open each project's modal separately.
+    const byProject = new Map();
+    for (const n of notes) {
+      if (!byProject.has(n.projectId)) byProject.set(n.projectId, []);
+      byProject.get(n.projectId).push(n);
+    }
+    const lines = [];
+    for (const [projectId, projectNotes] of byProject.entries()) {
+      const project = state.projects[projectId];
+      lines.push(project ? project.name : '(unknown)');
+      for (const n of projectNotes) lines.push(`  ${formatClock(n.ts)} — ${n.comment}`);
+      lines.push('');
+    }
+    navigator.clipboard.writeText(lines.join('\n').trim()).then(() => {
+      el.notesCopyBtn.textContent = 'Copied!';
+      setTimeout(() => { el.notesCopyBtn.textContent = 'Copy'; }, 1500);
+    }).catch(() => {
+      alert('Could not copy automatically — select and copy the notes manually.');
+    });
+  });
+
   el.themeSelect.addEventListener('change', async () => {
     state.settings = await updateSettings({ theme: el.themeSelect.value });
     applyTheme();
@@ -1095,6 +1237,80 @@ function wireStaticEvents() {
     el.addExcludeHint.textContent = `${domain} excluded — it won't ask for a project anymore.`;
     await loadState();
     renderExcludedSitesList();
+  });
+
+  el.addAlwaysPromptBtn.addEventListener('click', async () => {
+    const domain = el.newAlwaysPromptInput.value.trim().toLowerCase().replace(/^https?:\/\//, '').split('/')[0];
+    if (!domain) return;
+    await addAlwaysPromptSite(domain);
+    el.newAlwaysPromptInput.value = '';
+    el.addAlwaysPromptHint.textContent = `${domain} will now ask every visit.`;
+    await loadState();
+    renderAlwaysPromptSitesList();
+  });
+
+  async function runDeleteWithConfirm(label, action) {
+    if (!confirm(`${label} This permanently deletes tracked sessions in that range and cannot be undone. Continue?`)) return;
+    const count = await action();
+    await loadState();
+    renderAll();
+    el.deleteDataHint.textContent = count
+      ? `Deleted tracked data for ${count} day${count === 1 ? '' : 's'}.`
+      : 'Nothing to delete in that range.';
+  }
+
+  el.deleteLastWeekBtn.addEventListener('click', () =>
+    runDeleteWithConfirm('Delete everything older than 1 week?', () => deleteSessionsOlderThan(7)));
+  el.deleteLastMonthBtn.addEventListener('click', () =>
+    runDeleteWithConfirm('Delete everything older than 1 month?', () => deleteSessionsOlderThan(30)));
+  el.deleteOlderMonthsBtn.addEventListener('click', () => {
+    const months = Math.max(1, Number(el.deleteOlderMonthsInput.value) || 1);
+    return runDeleteWithConfirm(`Delete everything older than ${months} month${months === 1 ? '' : 's'}?`, () => deleteSessionsOlderThan(months * 30));
+  });
+  el.deleteCustomRangeBtn.addEventListener('click', () => {
+    const start = el.deleteRangeStart.value;
+    const end = el.deleteRangeEnd.value;
+    if (!start || !end) { el.deleteDataHint.textContent = 'Pick both a start and end date.'; return; }
+    return runDeleteWithConfirm(`Delete tracked data from ${start} to ${end}?`, () => deleteSessionsInRange(start, end));
+  });
+
+  el.downloadBackupBtn.addEventListener('click', async () => {
+    const backup = await exportFullBackup();
+    const json = JSON.stringify(backup, null, 2);
+    const blob = new Blob([json], { type: 'application/json;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const stamp = new Date(backup.exportedAt).toISOString().slice(0, 10);
+    chrome.downloads.download(
+      { url, filename: `orgclock-backup-${stamp}.json`, saveAs: true },
+      () => URL.revokeObjectURL(url)
+    );
+    el.backupHint.textContent = 'Backup downloaded.';
+  });
+
+  el.restoreBackupBtn.addEventListener('click', () => el.restoreBackupInput.click());
+  el.restoreBackupInput.addEventListener('change', async () => {
+    const file = el.restoreBackupInput.files?.[0];
+    el.restoreBackupInput.value = '';
+    if (!file) return;
+    let parsed;
+    try {
+      parsed = JSON.parse(await file.text());
+    } catch {
+      el.backupHint.textContent = "Couldn't read that file — is it a valid OrgClock backup .json?";
+      return;
+    }
+    const confirmed = confirm(
+      'Restore this backup? Anything currently tracked that overlaps with the backup\'s data will be overwritten by the backup\'s version. This cannot be undone.'
+    );
+    if (!confirmed) return;
+    try {
+      await importFullBackup(parsed);
+      await loadState();
+      renderAll();
+      el.backupHint.textContent = `Restored — backup was from ${new Date(parsed.exportedAt).toLocaleString()}.`;
+    } catch (err) {
+      el.backupHint.textContent = err.message;
+    }
   });
 
   el.timelinePrevDay.addEventListener('click', () => { timelineDate = shiftDateStr(timelineDate, -1); renderTimeline(); });

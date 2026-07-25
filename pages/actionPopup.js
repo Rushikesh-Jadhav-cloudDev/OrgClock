@@ -1,7 +1,7 @@
 // pages/actionPopup.js — the menu shown when the extension icon is clicked.
 // Replaces the old floating "Log task" on-page pill and the old
 // click-icon-to-open-dashboard-directly behavior with an explicit menu:
-// Log New Task / Continue Current Task / Open Dashboard / Pause / Resume.
+// Add Note / Continue Tracking / Open Dashboard / Pause / Resume.
 
 import {
   getActiveSession, getTaskContext, getDomainMap, getProjects,
@@ -26,7 +26,7 @@ function currentBilledProject(activeSession, taskContext, domainMap, projects) {
   if (!activeSession) return null;
   const ctx = taskContext[activeSession.domain];
   const projectId = ctx?.projectId || domainMap[activeSession.domain] || null;
-  return { project: projectId ? projects[projectId] : null, taskName: ctx?.taskName || '' };
+  return projectId ? projects[projectId] : null;
 }
 
 async function render() {
@@ -41,10 +41,10 @@ async function render() {
     el.pause.classList.add('hidden');
     el.resume.classList.remove('hidden');
   } else if (activeSession) {
-    const { project, taskName } = currentBilledProject(activeSession, taskContext, domainMap, projects);
+    const project = currentBilledProject(activeSession, taskContext, domainMap, projects);
     el.status.dataset.state = 'tracking';
     el.statusLine.textContent = project ? `Tracking · ${project.name}` : `Tracking · ${activeSession.domain}`;
-    el.statusSub.textContent = taskName || activeSession.domain;
+    el.statusSub.textContent = activeSession.domain;
     el.pause.classList.remove('hidden');
     el.resume.classList.add('hidden');
   } else {
@@ -70,7 +70,7 @@ async function openOrFocusDashboard() {
 el.logTask.addEventListener('click', async () => {
   const tab = await getActiveTab();
   if (tab?.id) {
-    try { await chrome.tabs.sendMessage(tab.id, { type: 'FORCE_LOG_TASK' }); } catch { /* no content script on this page (e.g. chrome:// or the store) */ }
+    try { await chrome.tabs.sendMessage(tab.id, { type: 'ORBIT_ADD_NOTE' }); } catch { /* no content script on this page (e.g. chrome:// or the store) */ }
   }
   window.close();
 });

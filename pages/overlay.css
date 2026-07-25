@@ -1,6 +1,11 @@
 /* overlay.css — styles for the in-page setup overlay injected by content.js.
-   Loaded inside a Shadow DOM, so everything is scoped under .orbit-root
-   rather than :root (a shadow tree has no element matching :root). */
+   Rendered in LIGHT DOM now (not a Shadow DOM — see content.js file header
+   for why: document.activeElement needs to correctly point at our real
+   input/textarea for host-page focus checks to back off correctly).
+   Everything is still scoped under .orbit-root to minimize collision with
+   host page CSS, with !important on the properties most likely to get
+   clobbered by a page's own global resets (positioning, and the base
+   look of inputs/buttons/textareas). */
 
 .orbit-root {
   --primary: #2A3EB1;
@@ -27,10 +32,11 @@
   --ease: cubic-bezier(0.2, 0, 0, 1);
 
   all: initial;
-  font-family: var(--font-sans);
-  position: fixed;
-  inset: 0;
-  z-index: 2147483647;
+  font-family: var(--font-sans) !important;
+  position: fixed !important;
+  inset: 0 !important;
+  z-index: 2147483647 !important;
+  display: block !important;
 }
 .orbit-root[data-theme='dark'] {
   --primary: #7C8CF0;
@@ -62,7 +68,7 @@
 .orbit-backdrop.visible { opacity: 1; }
 
 .orbit-card {
-  width: 380px;
+  width: 440px;
   max-width: calc(100vw - 48px);
   background: var(--surface-card);
   border-radius: var(--radius-lg);
@@ -100,9 +106,10 @@
 }
 
 .orbit-field input[type='text'], .orbit-field textarea {
-  width: 100%; padding: 8px 10px;
-  border: 1.5px solid var(--border-strong); border-radius: 8px;
-  font-size: 13px; background: var(--surface-card); color: var(--text-primary);
+  width: 100% !important; padding: 10px 12px !important;
+  border: 1.5px solid var(--border-strong) !important; border-radius: 8px !important;
+  font-size: 14px !important; background: var(--surface-card) !important; color: var(--text-primary) !important;
+  box-sizing: border-box !important; margin: 0 !important; line-height: normal !important;
 }
 .orbit-field textarea { resize: vertical; }
 .orbit-field input:focus, .orbit-field textarea:focus { outline: 2px solid var(--primary); outline-offset: 1px; }
@@ -118,8 +125,9 @@
 
 .orbit-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
 .orbit-btn {
-  appearance: none; border: none; border-radius: 999px; padding: 8px 16px;
-  font-size: 12.5px; font-weight: 600; cursor: pointer;
+  appearance: none !important; border: none !important; border-radius: 999px !important; padding: 8px 16px !important;
+  font-size: 12.5px !important; font-weight: 600 !important; cursor: pointer !important;
+  box-sizing: border-box !important; margin: 0 !important; line-height: normal !important;
   transition: background 120ms var(--ease), transform 80ms var(--ease);
 }
 .orbit-btn:active { transform: scale(0.97); }

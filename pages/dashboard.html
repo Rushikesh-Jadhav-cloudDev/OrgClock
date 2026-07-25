@@ -75,7 +75,7 @@
   <div class="view-tabs">
     <button class="view-tab active" data-view="history">Day-wise history</button>
     <button class="view-tab" data-view="timeline">Timeline</button>
-    <button class="view-tab" data-view="sessions">Session summary</button>
+    <button class="view-tab" data-view="sessions">Notes</button>
     <button class="view-tab" data-view="timesheet">Timesheet summary</button>
   </div>
 
@@ -92,11 +92,12 @@
     <div id="timelineTrack"><!-- populated by dashboard.js --></div>
   </section>
 
-  <section class="session-summary-view hidden" id="sessionSummaryView" aria-label="Session summary">
+  <section class="session-summary-view hidden" id="sessionSummaryView" aria-label="Notes">
     <div class="timeline-day-picker">
       <button class="icon-btn" id="sessionsPrevDay" aria-label="Previous day">‹</button>
       <span class="mono" id="sessionsDateLabel">Today</span>
       <button class="icon-btn" id="sessionsNextDay" aria-label="Next day">›</button>
+      <button class="btn btn-text" id="notesCopyBtn" style="margin-left:auto;">Copy</button>
     </div>
     <div id="sessionSummaryList"><!-- populated by dashboard.js --></div>
   </section>
@@ -106,7 +107,7 @@
       <button class="icon-btn" id="tsPrevWeek" aria-label="Previous week">‹</button>
       <span class="mono" id="tsWeekLabel">This week</span>
       <button class="icon-btn" id="tsNextWeek" aria-label="Next week">›</button>
-      <button class="btn btn-text" id="tsCopyBtn" style="margin-left:auto;">Copy for Replicon</button>
+      <button class="btn btn-text" id="tsCopyBtn" style="margin-left:auto;">Copy</button>
     </div>
     <div class="ts-table-wrap">
       <table class="ts-table" id="tsTable">
@@ -151,16 +152,16 @@
           <label class="switch"><input type="checkbox" id="autoTrackToggle" /><span class="switch-slider"></span></label>
           <span class="mono" id="autoTrackValue">On</span>
         </div>
-        <p class="field-hint">Turns tracking off everywhere, all sites, until switched back on. For a quick pause instead, use the extension icon's Pause/Resume — this is the global on/off switch.</p>
+        <p class="field-hint">Turns tracking off everywhere until you switch it back on. For a quick pause, use Pause/Resume on the extension icon instead — this is the master switch.</p>
       </div>
 
       <div class="field">
-        <label for="popupDelaySlider">Show the "which project" prompt</label>
+        <label for="popupDelaySlider">Wait before asking which project</label>
         <div class="slider-row">
           <input type="range" id="popupDelaySlider" min="0" max="10" step="0.5" />
           <span class="mono" id="popupDelayValue">2.5 s</span>
         </div>
-        <p class="field-hint">Delay after a page finishes loading before asking. Keeps the prompt from interfering with the page's own loading/rendering.</p>
+        <p class="field-hint">How long to wait after a page loads before asking. Keeps the popup out of the way while the page is still loading.</p>
       </div>
 
       <div class="field">
@@ -172,12 +173,12 @@
       </div>
 
       <div class="field">
-        <label for="mergeGapSlider">Merge sessions on the same project within</label>
+        <label for="mergeGapSlider">Combine quick switches within</label>
         <div class="slider-row">
           <input type="range" id="mergeGapSlider" min="10" max="180" step="10" />
           <span class="mono" id="mergeGapValue">90 s</span>
         </div>
-        <p class="field-hint">Rapid switching between two sites billed to the same project (e.g. an org tab and its JIRA board) gets combined into one block instead of many tiny ones.</p>
+        <p class="field-hint">Quick switches between sites on the same project — including a stray half-second click — get combined into one block instead of lots of tiny ones.</p>
       </div>
 
       <div class="field">
@@ -186,7 +187,7 @@
           <input type="range" id="screenGraceSlider" min="0" max="30" step="5" />
           <span class="mono" id="screenGraceValue">10 min</span>
         </div>
-        <p class="field-hint">Extra tolerance on top of the idle setting above, just for the "Chrome active" stat — so time spent reading or thinking without touching the mouse isn't counted as away. Project billing still pauses at the idle setting above; only this overall stat gets the extra grace. Note: this can only measure Chrome's own focus and input, not whether you're actually looking at the screen.</p>
+        <p class="field-hint">Extra time on top of the idle setting above, just for the "Chrome active" number — so reading without touching the mouse doesn't count as away. Only affects that one stat, not your tracked project time. Note: this can only tell if Chrome has focus, not whether you're actually looking at the screen.</p>
       </div>
 
       <div class="field">
@@ -200,12 +201,13 @@
 
       <div class="field">
         <label>Projects</label>
-        <ul class="settings-project-list" id="settingsProjectList"></ul>
+        <ul class="settings-project-list settings-project-list-wide" id="settingsProjectList"></ul>
       </div>
 
       <div class="field">
         <label>Categories</label>
-        <p class="field-hint">Built-in categories can be picked per project above. Add your own here if you need something more specific.</p>
+        <p class="field-hint">Yours to manage — add, rename, or delete anytime. Deleting one just clears it from any projects that had it; their tracked time is untouched.</p>
+        <ul class="settings-project-list" id="categoriesList"></ul>
         <div class="add-site-row">
           <input type="text" id="newCategoryInput" placeholder="e.g. Client Meetings" />
           <button class="btn btn-primary" id="addCategoryBtn" type="button">Add</button>
@@ -214,7 +216,7 @@
 
       <div class="field">
         <label>Excluded sites</label>
-        <p class="field-hint">Every site is tracked and will ask for a project the first time you visit it each day. Add sites here that should never ask — things you keep open all day that aren't tied to one project, like email.</p>
+        <p class="field-hint">Every site gets asked once a day by default. Add ones that should never ask — things you keep open all day but aren't project work, like email.</p>
         <ul class="settings-project-list" id="excludedSitesList"></ul>
         <div class="add-site-row">
           <input type="text" id="newExcludeInput" placeholder="e.g. mail.google.com" />
@@ -223,9 +225,53 @@
         <p class="hint" id="addExcludeHint"></p>
       </div>
 
+      <div class="field">
+        <label>Always show popup</label>
+        <p class="field-hint">Opposite of Excluded sites — these ask every time, even if you already answered today. Good for meeting tools where each visit is a different call.</p>
+        <ul class="settings-project-list" id="alwaysPromptSitesList"></ul>
+        <div class="add-site-row">
+          <input type="text" id="newAlwaysPromptInput" placeholder="e.g. meet.google.com" />
+          <button class="btn btn-primary" id="addAlwaysPromptBtn" type="button">Always ask</button>
+        </div>
+        <p class="hint" id="addAlwaysPromptHint"></p>
+      </div>
+
       <div class="field hidden" id="pendingPromptsField">
         <label>Dismissed prompts (this session)</label>
         <ul class="settings-project-list" id="pendingPromptsList"></ul>
+      </div>
+
+      <div class="field">
+        <label>Delete data</label>
+        <p class="field-hint">Permanently deletes tracked time in the range you pick. Projects aren't affected — delete those from the Projects list above.</p>
+        <div class="export-row">
+          <button class="btn btn-text" id="deleteLastWeekBtn">Older than 1 week</button>
+          <button class="btn btn-text" id="deleteLastMonthBtn">Older than 1 month</button>
+        </div>
+        <div class="add-site-row" style="margin-top:8px;align-items:center;">
+          <span style="font-size:12.5px;color:var(--text-secondary);white-space:nowrap;">Older than</span>
+          <input type="number" id="deleteOlderMonthsInput" min="1" value="3" style="max-width:70px;" />
+          <span style="font-size:12.5px;color:var(--text-secondary);white-space:nowrap;">months</span>
+          <button class="btn btn-text" id="deleteOlderMonthsBtn">Delete</button>
+        </div>
+        <p style="font-size:11.5px;color:var(--text-tertiary);margin-top:6px;">Or a custom date range:</p>
+        <div class="add-site-row" style="margin-top:8px;">
+          <input type="date" id="deleteRangeStart" />
+          <input type="date" id="deleteRangeEnd" />
+          <button class="btn btn-text" id="deleteCustomRangeBtn" style="color:var(--error);">Delete range</button>
+        </div>
+        <p class="hint" id="deleteDataHint"></p>
+      </div>
+
+      <div class="field">
+        <label>Backup</label>
+        <p class="field-hint">A full copy of everything — projects, time, settings, categories. Mainly useful when installing a new version in a different folder, since that can start empty even though nothing was deleted. Download a backup before switching, then restore it after.</p>
+        <div class="export-row">
+          <button class="btn btn-text" id="downloadBackupBtn">Download full backup (.json)</button>
+          <button class="btn btn-text" id="restoreBackupBtn">Restore from backup…</button>
+          <input type="file" id="restoreBackupInput" accept="application/json" class="hidden" />
+        </div>
+        <p class="hint" id="backupHint"></p>
       </div>
 
       <div class="field">
@@ -239,7 +285,7 @@
           <button class="btn btn-text" id="exportAllDetailBtn">All history — every session (CSV)</button>
         </div>
         <div class="export-row" style="margin-top:6px;">
-          <button class="btn btn-text" id="exportSessionsBtn">Session summary — by task (CSV)</button>
+          <button class="btn btn-text" id="exportSessionsBtn">Notes log (CSV)</button>
         </div>
       </div>
     </div>

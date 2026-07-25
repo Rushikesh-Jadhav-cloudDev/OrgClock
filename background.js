@@ -166,13 +166,21 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 // content.js writes setup results (and the dashboard writes edits/settings)
 // straight to chrome.storage — react generically rather than requiring
 // explicit messages.
+let storageReconcileDebounce = null;
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area === 'local' && changes.settings) {
     cachedSettings = null;
     withLock(ensureIdleDetectionInterval);
   }
   if ((area === 'local' && (changes.entries || changes.domainMap || changes.taskContext)) || area === 'session') {
-    withLock(reconcileAll);
+    // Every session append/edit writes `entries`, which used to trigger an
+    // immediate full reconcile each time. On a busy day that's a lot of
+    // extra storage reads back-to-back with no benefit — reconcile only
+    // cares about "did the active tab/domain/setup-state change," which
+    // doesn't need sub-300ms precision. Coalesced the same way SPA route
+    // churn already is below.
+    clearTimeout(storageReconcileDebounce);
+    storageReconcileDebounce = setTimeout(() => withLock(reconcileAll), UPDATE_DEBOUNCE_MS);
   }
 });
 
