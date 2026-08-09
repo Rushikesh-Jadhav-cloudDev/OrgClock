@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "OrgClock",
-  "version": "6.0.2",
+  "version": "8.0.1",
   "description": "Automatic timesheet across every site you work in — Salesforce orgs, JIRA, docs, research — with per-site exclusions for things like email that aren't project time.",
   "minimum_chrome_version": "116",
 

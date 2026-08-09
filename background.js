@@ -26,10 +26,14 @@ import {
   carryOverSetup,
   runWeeklyRolloverIfNeeded,
   getExcludedSites,
+  getIdleExemptSites,
   getGlobalActiveSession,
   setGlobalActiveSession,
   clearGlobalActiveSession,
-  addGlobalActiveMs
+  addGlobalActiveMs,
+  getEntriesForDate,
+  ensureEntryContainer,
+  addQuickNote
 } from './lib/storage.js';
 import { dateStr } from './lib/dateUtils.js';
 
@@ -158,6 +162,13 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name !== HEARTBEAT_ALARM) return;
   withLock(async () => {
     await heartbeatFlush();
+    // Re-evaluate "is Chrome actively in the foreground" on every
+    // heartbeat too, not just on discrete tab/window/idle events. Those
+    // events cover the common cases, but a long stretch with none of them
+    // firing (e.g. idle state technically unchanged, no tab switches)
+    // could otherwise leave the Chrome-active session open or closed
+    // longer than it should be before the next real event re-checks it.
+    await reconcileGlobalSession();
     await handleDateAndWeekRollover();
     await updateBadge();
   });
@@ -182,6 +193,60 @@ chrome.storage.onChanged.addListener((changes, area) => {
     clearTimeout(storageReconcileDebounce);
     storageReconcileDebounce = setTimeout(() => withLock(reconcileAll), UPDATE_DEBOUNCE_MS);
   }
+});
+
+// content.js can't reach IndexedDB directly — content scripts run in the
+// origin of whatever PAGE they're injected into, not the extension's own
+// origin, so a content script calling indexedDB.open() would silently
+// open a totally separate, isolated database per website rather than the
+// one place background.js and the dashboard actually read from. These
+// three handlers are the bridge: content.js sends a message, this runs in
+// the extension's own context (where IndexedDB correctly resolves to the
+// shared database), and sends the result back.
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.type === 'ORBIT_GET_TODAY_ENTRIES') {
+    getEntriesForDate(message.date).then((byDomain) => sendResponse({ byDomain })).catch(() => sendResponse({ byDomain: {} }));
+    return true; // keep the message channel open for the async response
+  }
+  if (message?.type === 'ORBIT_ENSURE_ENTRY_CONTAINER') {
+    ensureEntryContainer(message.date, message.domain).then(() => sendResponse({ ok: true })).catch(() => sendResponse({ ok: false }));
+    return true;
+  }
+  if (message?.type === 'ORBIT_SAVE_QUICK_NOTE') {
+    addQuickNote(message.date, message.domain, message.projectId, message.comment)
+      .then(() => sendResponse({ ok: true }))
+      .catch(() => sendResponse({ ok: false }));
+    return true;
+  }
+});
+
+// content.js sends this the instant a NEW "Currently working on" project
+// is confirmed via Save, BEFORE it writes the new taskContext to storage
+// (ordering matters — see content.js). If there's a currently-active
+// session on that same domain (e.g. you've had a meeting tab open and
+// active this whole time), its elapsed-so-far time gets flushed under the
+// OLD project via an explicit override — NOT by re-reading taskContext,
+// which would already show the new project by the time this runs — and
+// the session clock restarts so only time from this point forward counts
+// toward the new project. Without this, a 1-hour call split 30/30 between
+// two projects would silently log the FULL hour to whichever project was
+// picked last, since the session only ever gets tagged once, whenever it
+// finally flushes (i.e. when the tab loses focus) — not at the moment you
+// actually switched.
+chrome.runtime.onMessage.addListener((message) => {
+  if (message?.type !== 'ORBIT_PROJECT_SWITCH_FLUSH') return;
+  withLock(async () => {
+    const active = await getActiveSession();
+    if (!active || active.domain !== message.domain) return;
+    const now = Date.now();
+    if (now > active.startTs) {
+      await appendSession(active.date, active.domain, active.startTs, now, {
+        projectId: message.oldProjectId
+      });
+    }
+    await setActiveSession({ ...active, startTs: now, lastFlushTs: now });
+    await updateBadge();
+  });
 });
 
 // ------------------------------------------------------------ core engine
@@ -273,27 +338,46 @@ async function commitSwitch(candidate) {
 }
 
 async function getCurrentOrgCandidate() {
-  if (lastKnownIdleState !== 'active') return null;
-
   const settings = await getCachedSettings();
   if (settings.manuallyPaused || settings.autoTrackEnabled === false) return null;
 
+  // Chrome being the focused app is still required regardless of idle
+  // exemption — that check is specifically about keyboard/mouse input,
+  // not about whether you've switched to a completely different app.
   const win = await getFocusedNormalWindow();
   if (!win) return null;
 
-  let tabs;
-  try {
-    tabs = await chrome.tabs.query({ active: true, windowId: win.id });
-  } catch {
-    return null;
-  }
-  const tab = tabs[0];
+  const tab = await getActiveTabInWindow(win);
   if (!tab || !tab.url) return null;
+
+  const domain = getDomain(tab.url);
+
+  // Meeting apps (Google Meet, Zoom, Teams, etc.) are the canonical case:
+  // you can be actively in a call for an hour without touching the
+  // keyboard or mouse once, and system-wide idle detection has no way to
+  // tell that apart from actually stepping away. Domains on this list
+  // skip the idle check entirely — everything else still pauses normally.
+  if (lastKnownIdleState !== 'active' && !(await isIdleExemptDomain(domain))) return null;
 
   const excludedSites = await getExcludedSites();
   if (!isTrackableUrl(tab.url, excludedSites)) return null;
 
-  return { tabId: tab.id, windowId: win.id, domain: getDomain(tab.url) };
+  return { tabId: tab.id, windowId: win.id, domain };
+}
+
+async function getActiveTabInWindow(win) {
+  try {
+    const tabs = await chrome.tabs.query({ active: true, windowId: win.id });
+    return tabs[0] || null;
+  } catch {
+    return null;
+  }
+}
+
+async function isIdleExemptDomain(domain) {
+  if (!domain) return false;
+  const idleExemptSites = await getIdleExemptSites();
+  return Boolean(idleExemptSites[domain]);
 }
 
 // Pending "actually stop counting screen time" timer — separate from, and
@@ -303,9 +387,27 @@ async function getCurrentOrgCandidate() {
 // (reading, thinking) before it's counted as away.
 let pendingGlobalStopTimer = null;
 
-/** Domain-agnostic: is the browser itself actively being used right now? */
+/**
+ * Domain-agnostic: is the browser itself actively being used right now?
+ * "Domain-agnostic" with ONE exception — idle-exempt sites (meetings).
+ * This used to ignore idle-exemption entirely, checking ONLY system idle
+ * state, while getCurrentOrgCandidate() (project billing) did honor it —
+ * meaning on a long call on an idle-exempt domain, project time kept
+ * accruing correctly but this "Chrome active" stat quietly paused after
+ * the idle threshold anyway, making TRACKED time exceed "Chrome active"
+ * time, which shouldn't be structurally possible (project time is
+ * supposed to be a subset of active-Chrome time). Confirmed directly from
+ * an exported CSV: a day showing more tracked minutes than Chrome-active
+ * minutes despite normal, non-inflated session durations elsewhere.
+ */
 async function reconcileGlobalSession() {
-  const shouldBeActive = lastKnownIdleState === 'active' && Boolean(await getFocusedNormalWindow());
+  const win = await getFocusedNormalWindow();
+  let idleExempt = false;
+  if (win && lastKnownIdleState !== 'active') {
+    const tab = await getActiveTabInWindow(win);
+    idleExempt = await isIdleExemptDomain(tab?.url ? getDomain(tab.url) : null);
+  }
+  const shouldBeActive = Boolean(win) && (lastKnownIdleState === 'active' || idleExempt);
   const current = await getGlobalActiveSession();
 
   if (shouldBeActive) {
@@ -326,7 +428,13 @@ async function reconcileGlobalSession() {
     pendingGlobalStopTimer = setTimeout(() => {
       pendingGlobalStopTimer = null;
       withLock(async () => {
-        const stillInactive = lastKnownIdleState !== 'active' || !(await getFocusedNormalWindow());
+        const winNow = await getFocusedNormalWindow();
+        let idleExemptNow = false;
+        if (winNow && lastKnownIdleState !== 'active') {
+          const tabNow = await getActiveTabInWindow(winNow);
+          idleExemptNow = await isIdleExemptDomain(tabNow?.url ? getDomain(tabNow.url) : null);
+        }
+        const stillInactive = !winNow || (lastKnownIdleState !== 'active' && !idleExemptNow);
         const stillCurrent = await getGlobalActiveSession();
         if (stillInactive && stillCurrent) {
           await addGlobalActiveMs(stillCurrent.date, Date.now() - stillCurrent.startTs);

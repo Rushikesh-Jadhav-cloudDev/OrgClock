@@ -29,8 +29,9 @@ The icon opens a small menu instead of jumping straight to the dashboard:
 - **Continue Tracking** — just closes the menu; tracking continues as
   normal.
 - **Open Dashboard**
-- **Pause Tracking / Resume Tracking** — a manual, global on/off switch,
-  independent of idle detection.
+- **Pause Tracking / Resume Tracking** — a manual, global on/off switch
+  for PROJECT time tracking specifically, independent of idle detection.
+  Chrome active time keeps counting either way.
 
 ## How it works day to day
 
@@ -60,6 +61,149 @@ The icon opens a small menu instead of jumping straight to the dashboard:
   Settings, default 90s).
 - Idle-pauses billing after 5–10 minutes of no input. A separate, more
   forgiving grace period covers the "Chrome active" stat specifically.
+
+## What changed in v8.0.1 (hotfix, from a real dashboard + CSV)
+
+- **Tracked time could exceed Chrome active time** — structurally
+  shouldn't be possible, since project tracking is supposed to be a
+  strict subset of "Chrome is active." Root cause: v8.0.0's idle-exempt
+  sites feature (Settings → "Keep tracking during meetings") only
+  bypassed idle-pausing for PROJECT billing (`getCurrentOrgCandidate`) —
+  the separate "Chrome active" tracker (`reconcileGlobalSession`) had no
+  idea idle-exemption existed, so on a long stretch on an idle-exempt
+  domain, project time correctly kept accruing while Chrome-active
+  quietly paused after the idle threshold anyway. Confirmed directly
+  from an exported CSV (a day with more tracked minutes than measured
+  Chrome-active minutes, with the padding ruled out as coming from
+  manual sessions or merge-gap bridging — neither accounted for it).
+  Both trackers now check idle-exemption consistently.
+
+## What changed in v8.0.0
+
+### Bug fixes
+- **Mid-session project switches split time incorrectly.** Changing
+  "Currently working on" mid-call (e.g. a 1-hour meeting, 30 min on
+  Project A then 30 on Project B) used to silently log the ENTIRE hour to
+  whichever project was picked last — sessions only get tagged when they
+  flush (tab loses focus), not at the moment you switch. Fixed the same
+  way the old comment-flush mechanism worked in v5.1.1 (removed in
+  v6.0.1, which turned out to be premature — that removal was correct for
+  comments, not for project changes): content.js now messages
+  background.js the instant the project changes, which splits the
+  elapsed time under the OLD project and restarts the clock.
+- **Domain "forgot" its linked project, silently creating a duplicate.**
+  The home-project picker used to pre-fill the search box with a guessed
+  label (e.g. "synlawn2025" from a sandbox subdomain) — a plausible-
+  looking answer that, if not double-checked against the list below,
+  would get saved as a brand-new, separate project instead of the real
+  one. The box no longer pre-fills; Save now requires an explicit pick.
+  Added Settings → Projects → **Merge into…** to clean up any duplicates
+  this already created.
+- **Meeting tracking paused during inactivity.** No keyboard/mouse input
+  for the idle threshold paused project billing — correct for normal
+  browsing, wrong for a call where you're not touching either for an
+  hour. New Settings → **Keep tracking during meetings** list exempts
+  specific domains from the idle check entirely (Chrome still has to be
+  the focused app).
+
+### Performance — IndexedDB migration
+- `entries` (tracked sessions — written to on nearly every action) moved
+  from a single growing chrome.storage.local blob to IndexedDB, one
+  record per date (`lib/db.js`). This is the collection that actually
+  caused slowdown after weeks of use; every append/edit/note now only
+  touches that day's record instead of the whole history.
+- content.js (a content script) can't reach this directly — content
+  scripts run in the origin of whatever PAGE they're on, not the
+  extension's own origin, so a naive `indexedDB.open()` there would open
+  a totally isolated database per website. It now messages background.js
+  (which runs in the extension's own origin) for entries reads/writes.
+  `chrome.storage.onChanged` has no IndexedDB equivalent, so writes also
+  bump a tiny `entriesVersion` timestamp so existing "something changed,
+  reload" listeners keep working unmodified.
+- One-time migration on upgrade moves any existing chrome.storage.local
+  `entries` into IndexedDB, then removes the old key. Full backup/restore
+  updated to capture and restore IndexedDB data too (new schema version,
+  old backups still importable).
+- `archives` stays on chrome.storage.local — already addressed in v7.0.0
+  by not re-fetching it on every routine reload, and it's a much
+  lower-frequency-write collection than entries.
+
+### Extension icon popup
+- Pause/Resume replaced with a visible toggle switch directly in the
+  status row, not a menu item — "I could not find the toggle" was a
+  discoverability problem (the button worked, just wasn't recognizable
+  as the master switch buried in a 5-item list).
+
+### Dashboard
+- **Charts**: hover tooltips with exact values on every bar/segment/
+  point; date range presets (Today / This week / This month); new
+  "Chrome active vs. tracked" comparison chart.
+- **Export** moved out of Settings into its own tab.
+- **Daily summary banner** — a template-filled sentence ("Today you
+  spent 5h 42m across 4 projects...") above the stat cards once there's
+  enough tracked time to be worth summarizing.
+- **Timeline**: newest-first order, plus a start/end/total header for
+  the day so you don't have to scroll to find when it began.
+- Settings → **Prepend time to new notes** — an opt-in toggle that
+  timestamps comments added via the icon's Add Note.
+- Settings → Projects → **Merge into…** (see bug fixes above).
+
+### Deferred (flagged, not done this round)
+Full chart visual redesign, vertical Charts subtabs, per-project
+analytics pages, additional chart types (heatmap, hourly productivity,
+average session length), resizable settings sidebar, and a general
+dashboard layout/whitespace pass are all real, reasonable asks that
+didn't make this release given its size — say the word and any of these
+can be the focus of a following round rather than a shallow pass here.
+The periodic "Currently Tracking: X" reminder popup was explicitly
+flagged as optional/future and isn't built.
+
+## What changed in v7.0.0
+
+- **Work Summary replaces the Notes tab.** Clicking a Timesheet Summary
+  cell (or a project's card in Day-wise History) now opens a single large
+  editable text area — one line per comment logged, no timestamps, no
+  session grouping, matching exactly what the Timesheet Summary already
+  showed. It auto-populates from logged comments until the first Save;
+  after that, editing is authoritative — reorder, reword, delete lines
+  freely, and future comments only ever get appended to the bottom
+  instead of silently overwriting or hiding what you edited. **Copy**
+  copies exactly what's in the box, ready to paste into Replicon. The
+  old timestamped-note-card system (and the Notes tab) is gone.
+- **New Charts tab.** Time per project (bar), time per site (bar),
+  project distribution (donut), daily active time (line), and weekly
+  trend (bar) — with a date range picker and project/site filters.
+  Hand-rolled SVG rather than a bundled charting library, to keep the
+  extension's footprint the same as it's always been.
+- **"Currently working on" now defaults to your last active project
+  globally**, not just per-domain. Reopening the popup on a different
+  site than the one you were just working on picks up where you left
+  off instead of that site's own (possibly stale) remembered project.
+- **Chrome-active reconciliation now also runs on the once-a-minute
+  heartbeat**, not just on tab/window/idle events — closes a gap where a
+  long stretch with none of those events firing could leave the stat
+  stale until the next one did.
+- **Clarified that Pause (icon menu) and the master tracking switch
+  (Settings) only stop PROJECT time** — Chrome active time keeps
+  counting either way. This was already true; the UI just didn't say so.
+- **Dashboard no longer re-fetches the entire archived history on every
+  routine reload.** `archives` is the one collection that grows without
+  bound over months of use, and the dashboard used to re-read all of it
+  on every single storage change (which happens very often during active
+  tracking, since every session append writes `entries`). It's now only
+  re-fetched when something in `archives` itself actually changed —
+  weekly rollover, an explicit restore, or a delete — which is rare.
+  Everything else still refreshes on every change as before.
+- **Investigated the "Gmail only shows ~2 hours despite being open all
+  day" report**: this matches the tracker's by-design behavior — only
+  the tab that's actually frontmost in the focused window accumulates
+  time, not every open tab. A background tab sitting open all day
+  correctly contributes 0 additional time beyond the stretches it was
+  actually the active tab. If `mail.google.com` (or any site) is in
+  Settings → Excluded sites, it won't be tracked at all, which is worth
+  ruling out separately. Tracking *every open tab* regardless of focus
+  would be a materially different feature — flag it if that's actually
+  what's wanted and it can be scoped properly.
 
 ## What changed in v6.0.2 (hotfix, from real usage on real data)
 
@@ -267,25 +411,29 @@ The icon opens a small menu instead of jumping straight to the dashboard:
   configurable prompt delay, and user-defined custom categories are all
   new, in Settings and/or the icon menu.
 
-## Dashboard — four views
+## Dashboard — five views
 
 **Stat cards**: today's/this week's tracked time, Chrome active time,
 productive %, projects touched, sessions.
 
 **Day-wise history** — grouped by project. Each card's editor leads with
-an **Add a note** box (always blank — every save is its own timestamped
-entry) and **Today's notes**, the complete comment history for that
-project, in order. Below that, a **Sites contributing** list with
-per-site relink, and a collapsed **Advanced** section with the raw
+the **Work Summary** field (see below), a **Sites contributing** list
+with per-site relink, and a collapsed **Advanced** section with the raw
 tracked sessions — editable for start/end, plus add/merge/consolidate.
 
 **Timeline** — chronological, color-coded blocks for a day.
 
-**Notes** — every comment logged for a day, across all projects, in
-chronological order with timestamps; click-through to the same editor.
-
 **Timesheet summary** — project rows × day columns of hours + Total,
-comment indicator per cell, **Copy** (tab-separated, decimal hours).
+comment indicator per cell. Click a cell to open that project/day's
+**Work Summary**: a single editable text area, one line per comment
+logged, no timestamps, no session grouping — auto-populates until the
+first Save, after which it's yours; new comments only ever get appended
+to the bottom, never overwrite what you've edited. **Copy** copies
+exactly what's shown, ready to paste into Replicon.
+
+**Charts** — time per project (bar), time per site (bar), project
+distribution (donut), daily active time (line), weekly trend (bar).
+Date range picker plus project/site filters.
 
 **Settings**: idle threshold, merge-gap threshold, screen-time grace,
 prompt delay, global tracking on/off, theme, per-project renaming/
@@ -295,29 +443,44 @@ three CSV export modes (daily summary, full session detail, notes log).
 
 ## Data model
 
+**chrome.storage.local:**
 ```
 projects:      { [projectId]: { name, category, hue, createdAt, lastUsedAt } }
 domainMap:     { [domain]: projectId }                 -- permanent home link
 taskContext:   { [domain]: { projectId } }              -- which project a NEW session bills to
-entries:       { [date]: { [domain]: { sessions: [
-                   { id, start, end, projectId, comment, manual, isNote? }
-                ] } } }
+lastActiveProjectId: projectId | null                   -- global "last confirmed" default for Currently Working On
 manualAdjustments: { [date]: { [projectId]: ms } }
+workSummaries: { [date]: { [projectId]: { text, lastSyncedTs } } } -- the editable Work Summary
 excludedSites: { [domain]: { addedAt } }             -- opt-out list: never ask
 alwaysPromptSites: { [domain]: { addedAt } }         -- opposite: ask every visit
+idleExemptSites: { [domain]: { addedAt } }           -- skip the idle-pause check (meeting apps)
 customCategories: [ "Client Meetings", ... ]         -- fully user-managed, no built-ins
-settings:      { idleThresholdMinutes, mergeGapSeconds,
-                 screenTimeGraceMinutes, popupDelaySeconds, manuallyPaused,
-                 autoTrackEnabled, theme, ... }
-archives:      { [weekStart]: { entries, manualAdjustments } }
+settings:      { idleThresholdMinutes, mergeGapSeconds, screenTimeGraceMinutes,
+                 popupDelaySeconds, manuallyPaused, autoTrackEnabled,
+                 includeTimestampInNotes, theme, ... }
+archives:      { [weekStart]: { entries, manualAdjustments, workSummaries } }
+entriesVersion: timestamp   -- bumped on every IndexedDB entries write, purely so
+                                chrome.storage.onChanged listeners still fire (see Architecture)
 ```
 
+**IndexedDB** (`lib/db.js`, database `orgclock`, object store `entries`, keyPath `date`):
+```
+{ date: "2026-07-28", byDomain: { [domain]: { sessions: [
+    { id, start, end, projectId, comment, manual, isNote? }
+  ] } } }
+```
+One record per date — this is the collection written to on nearly every
+tracked action, so it's the one place a single giant JSON blob (the
+pre-v8.0.0 design) actually hurt performance over weeks of use.
+
 A comment is always a standalone session — `isNote: true` means it's a
-zero-duration note (start === end, contributes no tracked time), added
-via `addQuickNote()` from either the in-page popup or the dashboard.
-`getDayCommentLog()` reconstructs a day's full comment history just by
-reading every session's `comment` field in order — there's no separate
-"current" field anywhere that a later entry could conflict with.
+zero-duration note (start === end, contributes no tracked time). Raw
+comments still accumulate exactly as before (`getDayCommentLog()`
+reconstructs the full chronological log); `workSummaries` sits on top as
+the actually-edited, Replicon-ready version of that log for a given
+project/day — `computeWorkSummaryText()` in `lib/storage.js` is the pure
+function that merges the two (auto-populate when nothing's saved yet,
+append-only-what's-new once something is).
 
 ## Architecture
 
@@ -328,24 +491,32 @@ background.js           Service worker — the only place tracking decisions
                          are made. Owns the settle window (redirect-chain
                          absorption), same-org silent carry-over, screen-
                          time grace period, manual pause / auto-track gate,
-                         a settings cache, and debounced SPA-churn handling.
+                         a settings cache, debounced SPA-churn handling,
+                         and the message bridge that lets content.js reach
+                         IndexedDB (see lib/db.js below — content scripts
+                         can't reach it directly).
 content.js               Injected into every page. Defers all work behind
-                          a configurable delay. Owns the setup overlay
-                          (task-aware) — no floating on-page button anymore.
-                          No ES module imports (unsupported reliably in
-                          content scripts) — talks to chrome.storage
-                          directly.
+                          a configurable delay. Owns the setup overlay —
+                          no floating on-page button anymore. No ES module
+                          imports (unsupported reliably in content
+                          scripts) — talks to chrome.storage directly for
+                          small data, and messages background.js for
+                          entries reads/writes (IndexedDB, extension-
+                          origin-only — see lib/db.js).
 lib/
-  storage.js              All chrome.storage reads/writes, session merge/
-                           consolidation (task-aware), day/task aggregation,
-                           custom categories.
+  storage.js              All persistence reads/writes (chrome.storage.local
+                           for most things, IndexedDB via db.js for
+                           entries), session merge/consolidation, day
+                           aggregation, custom categories, work summaries.
+  db.js                    IndexedDB wrapper for `entries` — one record
+                            per date instead of one ever-growing blob.
   domains.js               URL parsing, same-org label guessing, exclusion
                             check (minimal built-in list + user's own).
   dateUtils.js               Local-time date/week/duration formatting.
   id.js                       Small id generator.
 pages/
-  dashboard.html/.js/.css      History / Timeline / Notes /
-                                Timesheet Summary views, settings drawer.
+  dashboard.html/.js/.css      History / Timeline / Timesheet Summary /
+                                Charts / Export views, settings drawer.
   actionPopup.html/.js/.css     The icon-click menu.
   overlay.css                   Setup card + Shadow DOM styles.
   common.css                    Shared design tokens (light + dark).
@@ -387,13 +558,7 @@ dismissals) and stays on your machine.
 
 ## Extensibility (not yet built, architecture anticipates these)
 
-- **Charts by project** — `groupDayByProject()` already produces
-  chart-ready aggregates; `getDayCommentLog()` covers a chronological view.
 - **Search and filters** — filtering `state.entries` before render.
 - **Excel (.xlsx) export** — swap the CSV writer; row shapes are flat.
-- **IndexedDB** — not implemented; `chrome.storage.local` with
-  `unlimitedStorage` plus weekly archiving already bounds the live
-  working set, so this likely isn't needed unless real usage shows
-  storage-quota problems. Worth revisiting only if that happens.
 - **JIRA/Salesforce sync** — would be the first exception to the "no
   network calls" guarantee above; flag clearly if ever added.

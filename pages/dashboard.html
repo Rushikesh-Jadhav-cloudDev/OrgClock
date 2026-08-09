@@ -40,6 +40,8 @@
 
 <main class="content">
 
+  <p class="daily-summary hidden" id="dailySummaryBanner"></p>
+
   <section class="stats-row" id="statsRow">
     <div class="stat-card">
       <p class="stat-label">Today (tracked)</p>
@@ -75,8 +77,9 @@
   <div class="view-tabs">
     <button class="view-tab active" data-view="history">Day-wise history</button>
     <button class="view-tab" data-view="timeline">Timeline</button>
-    <button class="view-tab" data-view="sessions">Notes</button>
     <button class="view-tab" data-view="timesheet">Timesheet summary</button>
+    <button class="view-tab" data-view="charts">Charts</button>
+    <button class="view-tab" data-view="export">Export</button>
   </div>
 
   <section class="history" id="history" aria-label="Day-wise history">
@@ -92,16 +95,6 @@
     <div id="timelineTrack"><!-- populated by dashboard.js --></div>
   </section>
 
-  <section class="session-summary-view hidden" id="sessionSummaryView" aria-label="Notes">
-    <div class="timeline-day-picker">
-      <button class="icon-btn" id="sessionsPrevDay" aria-label="Previous day">‹</button>
-      <span class="mono" id="sessionsDateLabel">Today</span>
-      <button class="icon-btn" id="sessionsNextDay" aria-label="Next day">›</button>
-      <button class="btn btn-text" id="notesCopyBtn" style="margin-left:auto;">Copy</button>
-    </div>
-    <div id="sessionSummaryList"><!-- populated by dashboard.js --></div>
-  </section>
-
   <section class="timesheet-view hidden" id="timesheetView" aria-label="Timesheet summary">
     <div class="timesheet-toolbar">
       <button class="icon-btn" id="tsPrevWeek" aria-label="Previous week">‹</button>
@@ -115,6 +108,78 @@
         <tbody id="tsBody"></tbody>
         <tfoot><tr id="tsFootRow"></tr></tfoot>
       </table>
+    </div>
+  </section>
+
+  <section class="charts-view hidden" id="chartsView" aria-label="Charts">
+    <div class="charts-controls">
+      <div class="charts-control-group">
+        <label for="chartTypeSelect">Chart</label>
+        <select id="chartTypeSelect">
+          <option value="project-bar">Time per project (bar)</option>
+          <option value="site-bar">Time per site (bar)</option>
+          <option value="project-donut">Project distribution (donut)</option>
+          <option value="daily-line">Daily active time (line)</option>
+          <option value="weekly-trend">Weekly trend (bar)</option>
+          <option value="active-vs-tracked">Chrome active vs. tracked (line)</option>
+        </select>
+      </div>
+      <div class="charts-control-group">
+        <label>Range</label>
+        <div class="charts-preset-row">
+          <button type="button" class="text-btn" data-preset="today">Today</button>
+          <button type="button" class="text-btn" data-preset="week">This week</button>
+          <button type="button" class="text-btn" data-preset="month">This month</button>
+        </div>
+      </div>
+      <div class="charts-control-group">
+        <label for="chartRangeStart">From</label>
+        <input type="date" id="chartRangeStart" />
+      </div>
+      <div class="charts-control-group">
+        <label for="chartRangeEnd">To</label>
+        <input type="date" id="chartRangeEnd" />
+      </div>
+      <div class="charts-control-group">
+        <button type="button" class="btn btn-text" id="chartFiltersToggle">Filters</button>
+      </div>
+    </div>
+    <div class="charts-filters hidden" id="chartsFiltersPanel">
+      <div class="charts-filter-col">
+        <p class="charts-filter-title">Projects <button type="button" class="text-btn" id="chartProjectsAllBtn">All</button></p>
+        <div id="chartProjectFilters"><!-- populated by dashboard.js --></div>
+      </div>
+      <div class="charts-filter-col">
+        <p class="charts-filter-title">Sites <button type="button" class="text-btn" id="chartSitesAllBtn">All</button></p>
+        <div id="chartSiteFilters"><!-- populated by dashboard.js --></div>
+      </div>
+    </div>
+    <div id="chartsContainer"><!-- populated by dashboard.js --></div>
+  </section>
+
+  <section class="export-view hidden" id="exportView" aria-label="Export">
+    <div class="export-card">
+      <h3>Daily summary</h3>
+      <p class="field-hint">One row per (date, project) — the actual timesheet-ready view, matches Timesheet Summary.</p>
+      <div class="export-row">
+        <button class="btn btn-text" id="exportWeekBtn">This week (CSV)</button>
+        <button class="btn btn-text" id="exportAllBtn">All history (CSV)</button>
+      </div>
+    </div>
+    <div class="export-card">
+      <h3>Full session detail</h3>
+      <p class="field-hint">One row per tracked session, for audit purposes — every switch, start/end, and comment.</p>
+      <div class="export-row">
+        <button class="btn btn-text" id="exportWeekDetailBtn">This week (CSV)</button>
+        <button class="btn btn-text" id="exportAllDetailBtn">All history (CSV)</button>
+      </div>
+    </div>
+    <div class="export-card">
+      <h3>Notes log</h3>
+      <p class="field-hint">Every comment logged, across all projects, in chronological order.</p>
+      <div class="export-row">
+        <button class="btn btn-text" id="exportSessionsBtn">All history (CSV)</button>
+      </div>
     </div>
   </section>
 
@@ -152,7 +217,16 @@
           <label class="switch"><input type="checkbox" id="autoTrackToggle" /><span class="switch-slider"></span></label>
           <span class="mono" id="autoTrackValue">On</span>
         </div>
-        <p class="field-hint">Turns tracking off everywhere until you switch it back on. For a quick pause, use Pause/Resume on the extension icon instead — this is the master switch.</p>
+        <p class="field-hint">Turns project-time tracking off everywhere until you switch it back on (Chrome active time keeps counting either way). For a quick pause, use Pause/Resume on the extension icon instead — this is the master switch.</p>
+      </div>
+
+      <div class="field">
+        <label for="timestampToggle">Prepend time to new notes</label>
+        <div class="toggle-row">
+          <label class="switch"><input type="checkbox" id="timestampToggle" /><span class="switch-slider"></span></label>
+          <span class="mono" id="timestampValue">Off</span>
+        </div>
+        <p class="field-hint">When on, a comment you add from the icon's Add Note gets prefixed with the time, e.g. "3:38 PM — Boston JIRA and Bitbucket".</p>
       </div>
 
       <div class="field">
@@ -236,6 +310,17 @@
         <p class="hint" id="addAlwaysPromptHint"></p>
       </div>
 
+      <div class="field">
+        <label>Keep tracking during meetings</label>
+        <p class="field-hint">Normally, no keyboard/mouse input for the idle threshold above pauses tracking — but you can go a long stretch on a call without touching either. Sites here skip that idle pause entirely (Chrome still has to be the focused window). Add your meeting tools: Meet, Zoom, Teams, etc.</p>
+        <ul class="settings-project-list" id="idleExemptSitesList"></ul>
+        <div class="add-site-row">
+          <input type="text" id="newIdleExemptInput" placeholder="e.g. meet.google.com" />
+          <button class="btn btn-primary" id="addIdleExemptBtn" type="button">Keep tracking</button>
+        </div>
+        <p class="hint" id="addIdleExemptHint"></p>
+      </div>
+
       <div class="field hidden" id="pendingPromptsField">
         <label>Dismissed prompts (this session)</label>
         <ul class="settings-project-list" id="pendingPromptsList"></ul>
@@ -274,19 +359,6 @@
         <p class="hint" id="backupHint"></p>
       </div>
 
-      <div class="field">
-        <label>Export</label>
-        <div class="export-row">
-          <button class="btn btn-text" id="exportWeekBtn">This week — daily summary (CSV)</button>
-          <button class="btn btn-text" id="exportAllBtn">All history — daily summary (CSV)</button>
-        </div>
-        <div class="export-row" style="margin-top:6px;">
-          <button class="btn btn-text" id="exportWeekDetailBtn">This week — every session (CSV)</button>
-          <button class="btn btn-text" id="exportAllDetailBtn">All history — every session (CSV)</button>
-        </div>
-        <div class="export-row" style="margin-top:6px;">
-          <button class="btn btn-text" id="exportSessionsBtn">Notes log (CSV)</button>
-        </div>
       </div>
     </div>
   </div>

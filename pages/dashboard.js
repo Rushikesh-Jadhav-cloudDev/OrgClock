@@ -9,9 +9,11 @@ import {
   groupDayByProject, getDayCommentLog, consolidateProjectSessions, getExcludedSites,
   addExcludedSite, removeExcludedSite, getGlobalActivity, getGlobalActiveSession,
   getAllDismissedThisSession, clearDismissal, getAllCategories, addCustomCategory,
-  renameCategory, deleteCategory, deleteProjectPermanently, getAlwaysPromptSites,
-  addAlwaysPromptSite, removeAlwaysPromptSite, deleteSessionsInRange, deleteSessionsOlderThan,
-  exportFullBackup, importFullBackup, addQuickNote, MANUAL_NOTE_DOMAIN
+  renameCategory, deleteCategory, deleteProjectPermanently, mergeProjectsInto, getAlwaysPromptSites,
+  addAlwaysPromptSite, removeAlwaysPromptSite, getIdleExemptSites, addIdleExemptSite, removeIdleExemptSite,
+  deleteSessionsInRange, deleteSessionsOlderThan,
+  exportFullBackup, importFullBackup, MANUAL_NOTE_DOMAIN,
+  getWorkSummaries, saveWorkSummary, computeWorkSummaryText
 } from '../lib/storage.js';
 import {
   dateStr, parseDateStr, weekStartStr, weekEndStr, friendlyDate, friendlyWeekRange,
@@ -27,10 +29,12 @@ let state = {
   entries: {},
   archives: {},
   manualAdjustments: {},
+  workSummaries: {},
   settings: {},
   activeSession: null,
   excludedSites: {},
   alwaysPromptSites: {},
+  idleExemptSites: {},
   globalActivity: {},
   globalActiveSession: null
 };
@@ -40,13 +44,18 @@ let chromeActiveBaseMs = 0;
 let collapsedDays = new Set();
 let currentView = 'history';
 let timelineDate = dateStr();
-let sessionSummaryDate = dateStr();
 let tsWeekStart = weekStartStr();
 let allCategories = [];
+let chartType = 'project-bar';
+let chartRangeStart = weekStartStr();
+let chartRangeEnd = dateStr();
+let chartProjectFilter = null; // null = all
+let chartSiteFilter = null;    // null = all
 
 const $ = (id) => document.getElementById(id);
 const el = {
   statusPill: $('statusPill'), statusText: $('statusText'), statusTimer: $('statusTimer'),
+  dailySummaryBanner: $('dailySummaryBanner'),
   statToday: $('statToday'), statWeek: $('statWeek'), statOrgs: $('statOrgs'), statSessions: $('statSessions'),
   statChromeActive: $('statChromeActive'), statProductive: $('statProductive'),
   history: $('history'), emptyState: $('emptyState'), rolloverBanner: $('rolloverBanner'), dismissBanner: $('dismissBanner'),
@@ -59,6 +68,7 @@ const el = {
   screenGraceSlider: $('screenGraceSlider'), screenGraceValue: $('screenGraceValue'),
   popupDelaySlider: $('popupDelaySlider'), popupDelayValue: $('popupDelayValue'),
   autoTrackToggle: $('autoTrackToggle'), autoTrackValue: $('autoTrackValue'),
+  timestampToggle: $('timestampToggle'), timestampValue: $('timestampValue'),
   themeSelect: $('themeSelect'),
   settingsProjectList: $('settingsProjectList'),
   categoriesList: $('categoriesList'),
@@ -69,6 +79,8 @@ const el = {
   excludedSitesList: $('excludedSitesList'), newExcludeInput: $('newExcludeInput'),
   addExcludeBtn: $('addExcludeBtn'), addExcludeHint: $('addExcludeHint'),
   alwaysPromptSitesList: $('alwaysPromptSitesList'), newAlwaysPromptInput: $('newAlwaysPromptInput'),
+  idleExemptSitesList: $('idleExemptSitesList'), newIdleExemptInput: $('newIdleExemptInput'),
+  addIdleExemptBtn: $('addIdleExemptBtn'), addIdleExemptHint: $('addIdleExemptHint'),
   addAlwaysPromptBtn: $('addAlwaysPromptBtn'), addAlwaysPromptHint: $('addAlwaysPromptHint'),
   deleteLastWeekBtn: $('deleteLastWeekBtn'), deleteLastMonthBtn: $('deleteLastMonthBtn'),
   deleteOlderMonthsInput: $('deleteOlderMonthsInput'), deleteOlderMonthsBtn: $('deleteOlderMonthsBtn'),
@@ -80,24 +92,27 @@ const el = {
   viewTabs: document.querySelectorAll('.view-tab'),
   timelineView: $('timelineView'), timelineTrack: $('timelineTrack'),
   timelineDateLabel: $('timelineDateLabel'), timelinePrevDay: $('timelinePrevDay'), timelineNextDay: $('timelineNextDay'),
-  sessionSummaryView: $('sessionSummaryView'), sessionSummaryList: $('sessionSummaryList'),
-  sessionsDateLabel: $('sessionsDateLabel'), sessionsPrevDay: $('sessionsPrevDay'), sessionsNextDay: $('sessionsNextDay'),
-  notesCopyBtn: $('notesCopyBtn'),
   timesheetView: $('timesheetView'), tsWeekLabel: $('tsWeekLabel'),
   tsPrevWeek: $('tsPrevWeek'), tsNextWeek: $('tsNextWeek'), tsCopyBtn: $('tsCopyBtn'),
-  tsHeadRow: $('tsHeadRow'), tsBody: $('tsBody'), tsFootRow: $('tsFootRow')
+  tsHeadRow: $('tsHeadRow'), tsBody: $('tsBody'), tsFootRow: $('tsFootRow'),
+  chartsView: $('chartsView'), chartsContainer: $('chartsContainer'), exportView: $('exportView'),
+  chartTypeSelect: $('chartTypeSelect'), chartRangeStart: $('chartRangeStart'), chartRangeEnd: $('chartRangeEnd'),
+  chartFiltersToggle: $('chartFiltersToggle'), chartsFiltersPanel: $('chartsFiltersPanel'),
+  chartProjectFilters: $('chartProjectFilters'), chartSiteFilters: $('chartSiteFilters'),
+  chartProjectsAllBtn: $('chartProjectsAllBtn'), chartSitesAllBtn: $('chartSitesAllBtn')
 };
 
 // ------------------------------------------------------------------ init
 
-async function loadState() {
-  const [projects, domainMap, taskContext, entries, archives, manualAdjustments,
-    settings, activeSession, excludedSites, alwaysPromptSites, globalActivity, globalActiveSession, categories] = await Promise.all([
-    getProjects(), getDomainMap(), getTaskContext(), getEntries(), getArchives(), getManualAdjustments(),
-    getSettings(), getActiveSession(), getExcludedSites(), getAlwaysPromptSites(), getGlobalActivity(), getGlobalActiveSession(),
+async function loadState({ skipArchives = false } = {}) {
+  const archives = skipArchives ? state.archives : await getArchives();
+  const [projects, domainMap, taskContext, entries, manualAdjustments, workSummaries,
+    settings, activeSession, excludedSites, alwaysPromptSites, idleExemptSites, globalActivity, globalActiveSession, categories] = await Promise.all([
+    getProjects(), getDomainMap(), getTaskContext(), getEntries(), getManualAdjustments(), getWorkSummaries(),
+    getSettings(), getActiveSession(), getExcludedSites(), getAlwaysPromptSites(), getIdleExemptSites(), getGlobalActivity(), getGlobalActiveSession(),
     getAllCategories()
   ]);
-  state = { projects, domainMap, taskContext, entries, archives, manualAdjustments, settings, activeSession, excludedSites, alwaysPromptSites, globalActivity, globalActiveSession };
+  state = { projects, domainMap, taskContext, entries, archives, manualAdjustments, workSummaries, settings, activeSession, excludedSites, alwaysPromptSites, idleExemptSites, globalActivity, globalActiveSession };
   allCategories = categories;
 }
 
@@ -116,14 +131,27 @@ async function checkRolloverNotice() {
   if (pendingRolloverNotice) el.rolloverBanner.classList.remove('hidden');
 }
 
-let reloadQueued = false;
+// `archives` is the one collection that grows without bound over months of
+// use — everything else (entries, manualAdjustments, workSummaries, etc.)
+// stays small since weekly rollover already keeps the LIVE working set to
+// roughly the current week. Re-reading months of archived history on
+// every single storage-triggered reload — which happens very often during
+// active tracking, since every session append writes `entries` — is
+// exactly the kind of thing that would get slower the longer this has
+// been installed. Since archives only actually change on a rare weekly
+// rollover or an explicit restore/delete, this accumulates every key that
+// changed across the debounce window and only re-fetches archives if it
+// was genuinely one of them; otherwise the already-loaded copy is reused.
+let reloadTimer = null;
+let pendingChangedKeys = new Set();
 function onStorageChanged(changes, area) {
   if (area !== 'local' && area !== 'session') return;
-  if (reloadQueued) return;
-  reloadQueued = true;
-  setTimeout(async () => {
-    reloadQueued = false;
-    await loadState();
+  for (const key of Object.keys(changes)) pendingChangedKeys.add(key);
+  clearTimeout(reloadTimer);
+  reloadTimer = setTimeout(async () => {
+    const skipArchives = !pendingChangedKeys.has('archives');
+    pendingChangedKeys = new Set();
+    await loadState({ skipArchives });
     renderAll();
   }, 250);
 }
@@ -157,6 +185,13 @@ function getManualAdjustmentsForDate(date) {
   }
   return {};
 }
+function getWorkSummariesForDate(date) {
+  if (state.workSummaries[date]) return state.workSummaries[date];
+  for (const archive of Object.values(state.archives)) {
+    if (archive.entries[date]) return archive.workSummaries?.[date] || {};
+  }
+  return {};
+}
 function isArchivedDate(date) {
   if (state.entries[date]) return null;
   for (const [weekStart, archive] of Object.entries(state.archives)) {
@@ -185,8 +220,8 @@ function renderAll() {
   renderStats();
   renderHistory();
   renderTimeline();
-  renderSessionSummary();
   renderTimesheet();
+  renderCharts();
   if (!el.settingsOverlay.classList.contains('hidden')) renderSettingsPanel();
 }
 
@@ -238,6 +273,49 @@ function renderStats() {
   el.statSessions.textContent = String(sessionsToday);
   el.statChromeActive.textContent = formatDuration(chromeActiveBaseMs);
   el.statProductive.textContent = productivePct(todayBaseMs, chromeActiveBaseMs);
+
+  renderDailySummary(today, todayGroups);
+}
+
+/**
+ * Template-based "daily summary" — not real AI, just plugging today's
+ * numbers into a sentence template, but reads similarly to one. Skipped
+ * once tracked time is trivial (under a few minutes) since a summary
+ * sentence about 2 minutes of activity isn't useful.
+ */
+function renderDailySummary(date, groups) {
+  const totalMs = groups.reduce((s, g) => s + g.totalMs, 0);
+  if (totalMs < 5 * 60000) { el.dailySummaryBanner.classList.add('hidden'); return; }
+
+  const sorted = [...groups].sort((a, b) => b.totalMs - a.totalMs);
+  const top = sorted[0];
+  const topProject = state.projects[top.projectId];
+
+  const sessions = flattenDaySessions(getByDomainForDate(date));
+  const timedSessions = sessions.filter((s) => !s.isNote);
+  const noteCount = sessions.filter((s) => s.comment).length;
+
+  const hourMs = new Array(24).fill(0);
+  for (const s of timedSessions) {
+    hourMs[new Date(s.start).getHours()] += Math.max(0, s.end - s.start);
+  }
+  let peakHour = -1, peakMs = 0;
+  hourMs.forEach((ms, h) => { if (ms > peakMs) { peakMs = ms; peakHour = h; } });
+
+  const parts = [];
+  parts.push(`Today you spent ${formatDuration(totalMs)} across ${groups.length} project${groups.length === 1 ? '' : 's'}.`);
+  if (topProject && groups.length > 1) parts.push(`Most of your time (${formatDuration(top.totalMs)}) was on ${topProject.name}.`);
+  if (peakHour >= 0 && peakMs >= 15 * 60000) parts.push(`Your peak activity was around ${formatHourRange(peakHour)}.`);
+  parts.push(`You switched between ${timedSessions.length} tracked activit${timedSessions.length === 1 ? 'y' : 'ies'}${noteCount ? ` and added ${noteCount} note${noteCount === 1 ? '' : 's'}` : ''}.`);
+
+  el.dailySummaryBanner.textContent = parts.join(' ');
+  el.dailySummaryBanner.classList.remove('hidden');
+}
+
+function formatHourRange(hour) {
+  const start = new Date(); start.setHours(hour, 0, 0, 0);
+  const end = new Date(); end.setHours((hour + 1) % 24, 0, 0, 0);
+  return `${start.toLocaleTimeString(undefined, { hour: 'numeric' })}–${end.toLocaleTimeString(undefined, { hour: 'numeric' })}`;
 }
 
 function productivePct(trackedMs, totalMs) {
@@ -393,6 +471,79 @@ function fromLocalInputValue(v) {
   return new Date(v).getTime();
 }
 
+/**
+ * The single editable Work Summary textarea — shared by the lightweight
+ * Timesheet Summary modal and the fuller Day-wise History editor. Auto-
+ * populates from the day's comment log until the first Save; after that,
+ * only genuinely new comments get appended to the bottom of whatever the
+ * user has edited (see storage.js's computeWorkSummaryText for the exact
+ * rule) — editing is authoritative, nothing here can silently overwrite
+ * or hide it the way the old dayNotes field used to.
+ */
+function buildWorkSummaryField(date, projectId) {
+  const commentLog = getDayCommentLog(getByDomainForDate(date));
+  const saved = getWorkSummariesForDate(date)[projectId] || null;
+  const text = computeWorkSummaryText(commentLog, projectId, saved);
+
+  const field = document.createElement('div');
+  field.className = 'field';
+  field.innerHTML = `
+    <label>Work Summary <span class="ws-hint">(auto-fills from logged comments — edit freely; new comments append below next time you open this, after Save)</span></label>
+    <textarea class="ws-textarea" rows="9" placeholder="Nothing logged yet today.">${escapeHtml(text)}</textarea>
+    <div class="ws-actions">
+      <button type="button" class="btn btn-text ws-copy-btn">Copy</button>
+      <button type="button" class="btn btn-primary ws-save-btn">Save</button>
+    </div>
+  `;
+  const textarea = field.querySelector('.ws-textarea');
+  const copyBtn = field.querySelector('.ws-copy-btn');
+  const saveBtn = field.querySelector('.ws-save-btn');
+
+  copyBtn.addEventListener('click', () => {
+    navigator.clipboard.writeText(textarea.value).then(() => {
+      copyBtn.textContent = 'Copied!';
+      setTimeout(() => { copyBtn.textContent = 'Copy'; }, 1400);
+    }).catch(() => {
+      alert('Could not copy automatically — select and copy the text manually.');
+    });
+  });
+
+  saveBtn.addEventListener('click', async () => {
+    saveBtn.disabled = true;
+    const originalLabel = saveBtn.textContent;
+    saveBtn.textContent = 'Saving…';
+    await saveWorkSummary(date, projectId, textarea.value);
+    await loadState();
+    renderHistory(); renderTimesheet();
+    saveBtn.disabled = false;
+    saveBtn.textContent = 'Saved!';
+    setTimeout(() => { saveBtn.textContent = originalLabel; }, 1200);
+  });
+
+  return field;
+}
+
+/**
+ * Lightweight modal for the Timesheet Summary's per-cell click — just the
+ * Work Summary field, nothing else. The fuller Day-wise History editor
+ * (buildLiveProjectEditView, below) embeds the same field alongside Sites/
+ * Advanced/Adjustment for when more than the summary text is needed.
+ */
+function openWorkSummaryModal(date, projectId) {
+  const project = state.projects[projectId];
+  el.entryModalTitle.textContent = `${project ? project.name : '(unknown)'} — ${friendlyDate(date, { noRelative: true })}`;
+  el.entryModalBody.innerHTML = '';
+  const wrap = document.createElement('div');
+  wrap.appendChild(buildWorkSummaryField(date, projectId));
+  const footer = document.createElement('div');
+  footer.className = 'modal-footer';
+  footer.innerHTML = `<span></span><button type="button" class="btn btn-primary" id="wsCloseBtn">Done</button>`;
+  footer.querySelector('#wsCloseBtn').addEventListener('click', closeEntryModal);
+  wrap.appendChild(footer);
+  el.entryModalBody.appendChild(wrap);
+  el.entryModalOverlay.classList.remove('hidden');
+}
+
 function openProjectModal(date, group, { archived, weekStart }) {
   const project = state.projects[group.projectId];
   el.entryModalTitle.textContent = `${project ? project.name : '(unknown)'} — ${friendlyDate(date, { noRelative: true })}`;
@@ -438,50 +589,12 @@ function buildArchivedProjectView(group, weekStart) {
 function buildLiveProjectEditView(date, group) {
   const wrap = document.createElement('div');
 
-  // --- Add a note: always blank, saved instantly as its own standalone
-  // timestamped entry — never a persistent field something else can
-  // silently override or block. That silent-override was exactly the bug
-  // (the old single "overall notes" field permanently won over anything
-  // added afterward from the popup).
-  const addNoteField = document.createElement('div');
-  addNoteField.className = 'field';
-  addNoteField.innerHTML = `<label for="quickNoteArea">Add a note</label>
-    <textarea id="quickNoteArea" rows="2" placeholder="What's happening right now?"></textarea>
-    <div style="display:flex;justify-content:flex-end;margin-top:6px;">
-      <button type="button" class="btn btn-primary" id="quickNoteAddBtn">Add</button>
-    </div>`;
-  addNoteField.querySelector('#quickNoteAddBtn').addEventListener('click', async () => {
-    const textarea = addNoteField.querySelector('#quickNoteArea');
-    const text = textarea.value.trim();
-    if (!text) return;
-    await addQuickNote(date, MANUAL_NOTE_DOMAIN, group.projectId, text);
-    await loadState();
-    reopenThisProjectModal(date, group.projectId);
-  });
-
-  // --- Today's full comment history, in order. Always complete — every
-  // note shows up, nothing here can silently block a later one.
-  const historyField = document.createElement('div');
-  historyField.className = 'field';
-  const log = getDayCommentLog(getByDomainForDate(date)).filter((n) => n.projectId === group.projectId);
-  historyField.innerHTML = `<label>Today's notes${log.length ? ` <span style="font-weight:400;color:var(--text-tertiary)">(${log.length})</span>` : ''}</label>`;
-  const historyList = document.createElement('div');
-  historyList.className = 'note-history';
-  for (const entry of log) {
-    const row = document.createElement('div');
-    row.className = 'note-entry';
-    row.innerHTML = `<span class="mono note-entry-time">${formatClock(entry.ts)}</span>
-      <span class="note-entry-text">${escapeHtml(entry.comment)}</span>
-      <button type="button" class="row-btn" title="Delete note">✕</button>`;
-    row.querySelector('button').addEventListener('click', async () => {
-      await deleteSession(date, entry.domain, entry.id);
-      await loadState();
-      reopenThisProjectModal(date, group.projectId);
-    });
-    historyList.appendChild(row);
-  }
-  if (!log.length) historyList.innerHTML = '<p style="font-size:12.5px;color:var(--text-tertiary);">No notes yet today for this project.</p>';
-  historyField.appendChild(historyList);
+  // --- Work Summary: the one editable surface for this project's day,
+  // shared with the lightweight Timesheet Summary modal (see
+  // buildWorkSummaryField above). Replaces the old timestamped-note-card
+  // list entirely — auto-populates from logged comments, stays editable,
+  // new comments append rather than overwrite once saved once.
+  const workSummaryField = buildWorkSummaryField(date, group.projectId);
 
   // --- Linked sites (permanent home project per domain)
   const sitesField = document.createElement('div');
@@ -642,19 +755,8 @@ function buildLiveProjectEditView(date, group) {
   });
   footer.querySelector('#doneBtn').addEventListener('click', closeEntryModal);
 
-  wrap.append(addNoteField, historyField, sitesField, details, adjField, footer);
+  wrap.append(workSummaryField, sitesField, details, adjField, footer);
   return wrap;
-}
-
-/** Re-finds the project's fresh group after a note add/delete and re-opens the modal on it, so the edit stays visible without a jarring full close/reopen. */
-function reopenThisProjectModal(date, projectId) {
-  renderAll();
-  const fresh = projectGroupsForDate(date).find((g) => g.projectId === projectId);
-  if (fresh) {
-    openProjectModal(date, fresh, { archived: false, weekStart: null });
-  } else {
-    closeEntryModal();
-  }
 }
 
 function openRelinkPicker(anchorBtn, domain) {
@@ -689,9 +791,31 @@ function renderTimeline() {
     el.timelineTrack.innerHTML = '<p style="font-size:13px;color:var(--text-tertiary);padding:20px 4px;">No tracked time on this day.</p>';
     return;
   }
+
+  // Daily summary header: first-to-last span and total tracked time, so
+  // "when did today actually start/end" doesn't require scrolling to the
+  // very bottom of a long list to find the earliest entry.
+  const timedSessions = sessions.filter((s) => !s.isNote);
+  if (timedSessions.length) {
+    const dayStart = Math.min(...timedSessions.map((s) => s.start));
+    const dayEnd = Math.max(...timedSessions.map((s) => s.end));
+    const totalMs = timedSessions.reduce((sum, s) => sum + Math.max(0, s.end - s.start), 0);
+    const header = document.createElement('div');
+    header.className = 'timeline-day-summary';
+    header.innerHTML = `
+      <div><span class="timeline-day-summary-label">Start at</span><span class="mono">${formatClock(dayStart)}</span></div>
+      <div><span class="timeline-day-summary-label">End at</span><span class="mono">${formatClock(dayEnd)}</span></div>
+      <div><span class="timeline-day-summary-label">Tracked</span><span class="mono">${formatDuration(totalMs)}</span></div>
+    `;
+    el.timelineTrack.appendChild(header);
+  }
+
   const track = document.createElement('div');
   track.className = 'timeline-track-row';
-  for (const s of sessions) {
+  // Newest first — recent activity is almost always what you're looking
+  // for, and a long day shouldn't require scrolling past hours of older
+  // entries to reach it.
+  for (const s of [...sessions].reverse()) {
     const project = state.projects[s.projectId];
     const block = document.createElement('div');
     block.className = 'timeline-block';
@@ -707,38 +831,6 @@ function renderTimeline() {
     track.appendChild(block);
   }
   el.timelineTrack.appendChild(track);
-}
-
-function renderSessionSummary() {
-  if (currentView !== 'sessions') return;
-  el.sessionsDateLabel.textContent = friendlyDate(sessionSummaryDate, { noRelative: true }) + (sessionSummaryDate === dateStr() ? ' (Today)' : '');
-  const byDomain = getByDomainForDate(sessionSummaryDate);
-  const notes = getDayCommentLog(byDomain);
-
-  el.sessionSummaryList.innerHTML = '';
-  if (!notes.length) {
-    el.sessionSummaryList.innerHTML = '<p style="font-size:13px;color:var(--text-tertiary);padding:20px 4px;">No notes on this day.</p>';
-    return;
-  }
-  for (const n of notes) {
-    const project = state.projects[n.projectId];
-    const block = document.createElement('div');
-    block.className = 'task-block';
-    block.style.setProperty('--entry-hue', project ? `hsl(${project.hue}, 60%, 50%)` : 'var(--primary)');
-    block.innerHTML = `
-      <div class="task-main">
-        <p class="task-title">${escapeHtml(project ? project.name : '(unknown)')}</p>
-        <p class="task-sites">${escapeHtml(n.comment)}</p>
-      </div>
-      <span class="task-duration mono" style="font-size:12.5px;font-weight:600;">${formatClock(n.ts)}</span>
-    `;
-    block.addEventListener('click', () => {
-      const projectGroups = projectGroupsForDate(sessionSummaryDate);
-      const group = projectGroups.find((g) => g.projectId === n.projectId);
-      if (group) openProjectModal(sessionSummaryDate, group, { archived: Boolean(isArchivedDate(sessionSummaryDate)), weekStart: isArchivedDate(sessionSummaryDate) });
-    });
-    el.sessionSummaryList.appendChild(block);
-  }
 }
 
 // ------------------------------------------------------------------ timesheet summary view
@@ -796,7 +888,12 @@ function renderTimesheet() {
       td.innerHTML = (cell.ms ? formatDuration(cell.ms) : '—') + (cell.hasNote ? '<span class="ts-comment-dot" title="Has a comment"></span>' : '');
       td.title = cell.group?.displayNote || '';
       td.addEventListener('click', () => {
-        if (cell.group) openProjectModal(cell.date, cell.group, { archived: Boolean(isArchivedDate(cell.date)), weekStart: isArchivedDate(cell.date) });
+        const archivedWeek = isArchivedDate(cell.date);
+        if (archivedWeek) {
+          if (cell.group) openProjectModal(cell.date, cell.group, { archived: true, weekStart: archivedWeek });
+        } else {
+          openWorkSummaryModal(cell.date, projectId);
+        }
       });
       tr.appendChild(td);
     }
@@ -874,6 +971,8 @@ function renderSettingsPanel() {
   el.popupDelayValue.textContent = `${state.settings.popupDelaySeconds ?? 2.5} s`;
   el.autoTrackToggle.checked = state.settings.autoTrackEnabled !== false;
   el.autoTrackValue.textContent = state.settings.autoTrackEnabled !== false ? 'On' : 'Off';
+  el.timestampToggle.checked = Boolean(state.settings.includeTimestampInNotes);
+  el.timestampValue.textContent = state.settings.includeTimestampInNotes ? 'On' : 'Off';
   el.themeSelect.value = state.settings.theme;
 
   el.settingsProjectList.innerHTML = '';
@@ -887,6 +986,7 @@ function renderSettingsPanel() {
       </div>
       <div class="proj-row-bottom">
         <select class="category-select" data-id="${p.id}"></select>
+        <button type="button" class="text-btn" data-id="${p.id}" data-action="merge">Merge into…</button>
         <button type="button" class="remove-btn" data-id="${p.id}">Delete permanently</button>
       </div>`;
     const input = li.querySelector('input');
@@ -906,6 +1006,17 @@ function renderSettingsPanel() {
       await loadState();
       renderHistory(); renderTimesheet();
     });
+    li.querySelector('[data-action="merge"]').addEventListener('click', async () => {
+      const otherNames = projectList.filter((x) => x.id !== p.id).map((x) => x.name).join(', ');
+      const typed = prompt(`Merge "${p.name}" into which existing project? All its time, sessions, and work summaries move over, and "${p.name}" is then deleted.\n\nExisting projects: ${otherNames}`, '');
+      if (typed == null) return;
+      const target = projectList.find((x) => x.name.toLowerCase() === typed.trim().toLowerCase() && x.id !== p.id);
+      if (!target) { alert(`No other project named "${typed.trim()}" — check the spelling and try again.`); return; }
+      if (!confirm(`Merge "${p.name}" into "${target.name}"? This cannot be undone.`)) return;
+      await mergeProjectsInto(p.id, target.id);
+      await loadState();
+      renderAll();
+    });
     li.querySelector('.remove-btn').addEventListener('click', async () => {
       const confirmed = confirm(
         `Permanently delete "${p.name}"? This removes ALL its tracked time (live and archived), everywhere. This cannot be undone.`
@@ -924,6 +1035,7 @@ function renderSettingsPanel() {
   renderCategoriesList();
   renderExcludedSitesList();
   renderAlwaysPromptSitesList();
+  renderIdleExemptSitesList();
   renderPendingPrompts();
 }
 
@@ -975,6 +1087,25 @@ function renderAlwaysPromptSitesList() {
   }
   if (!domains.length) {
     el.alwaysPromptSitesList.innerHTML = '<p style="font-size:12.5px;color:var(--text-tertiary)">No sites set to always ask yet.</p>';
+  }
+}
+
+function renderIdleExemptSitesList() {
+  el.idleExemptSitesList.innerHTML = '';
+  const domains = Object.keys(state.idleExemptSites).sort();
+  for (const domain of domains) {
+    const li = document.createElement('li');
+    li.innerHTML = `<span style="flex:1;font-family:var(--font-mono);font-size:11.5px;">${escapeHtml(domain)}</span>
+      <button type="button" class="remove-btn" data-domain="${escapeHtml(domain)}">Remove</button>`;
+    li.querySelector('.remove-btn').addEventListener('click', async () => {
+      await removeIdleExemptSite(domain);
+      await loadState();
+      renderIdleExemptSitesList();
+    });
+    el.idleExemptSitesList.appendChild(li);
+  }
+  if (!domains.length) {
+    el.idleExemptSitesList.innerHTML = '<p style="font-size:12.5px;color:var(--text-tertiary)">No sites set to keep tracking through idle yet.</p>';
   }
 }
 
@@ -1111,6 +1242,280 @@ function exportCsv(rows, label) {
   chrome.downloads.download({ url, filename, saveAs: true }, () => URL.revokeObjectURL(url));
 }
 
+// ------------------------------------------------------------------ charts
+
+function truncateLabel(s, max) {
+  return s.length > max ? `${s.slice(0, max - 1)}…` : s;
+}
+
+/** Aggregates tracked time over [startDate, endDate] by project and by site, respecting the active filters. */
+function collectChartData(startDate, endDate) {
+  const perProjectMs = new Map();
+  const perSiteMs = new Map();
+  const perDayMs = new Map();
+  if (!startDate || !endDate || startDate > endDate) return { perProjectMs, perSiteMs, perDayMs };
+
+  const cursor = parseDateStr(startDate);
+  const end = parseDateStr(endDate);
+  while (cursor <= end) {
+    const d = dateStr(cursor);
+    const byDomain = getByDomainForDate(d);
+    const groups = groupDayByProject(byDomain, getManualAdjustmentsForDate(d));
+    let dayMs = 0;
+    for (const g of groups) {
+      if (chartProjectFilter && !chartProjectFilter.has(g.projectId)) continue;
+      perProjectMs.set(g.projectId, (perProjectMs.get(g.projectId) || 0) + g.totalMs);
+      dayMs += g.totalMs;
+    }
+    for (const s of flattenDaySessions(byDomain)) {
+      if (s.isNote || s.domain === MANUAL_NOTE_DOMAIN) continue;
+      if (chartProjectFilter && !chartProjectFilter.has(s.projectId)) continue;
+      if (chartSiteFilter && !chartSiteFilter.has(s.domain)) continue;
+      const ms = Math.max(0, s.end - s.start);
+      perSiteMs.set(s.domain, (perSiteMs.get(s.domain) || 0) + ms);
+    }
+    perDayMs.set(d, dayMs);
+    cursor.setDate(cursor.getDate() + 1);
+  }
+  return { perProjectMs, perSiteMs, perDayMs };
+}
+
+/** Horizontal bar chart — reads well with long project/site name labels. */
+function buildBarChartSvg(items) {
+  const width = 640;
+  const rowH = 30;
+  const height = items.length * rowH + 24;
+  const maxVal = Math.max(...items.map((i) => i.value), 1);
+  const labelW = 150;
+  const chartW = width - labelW - 74;
+
+  let bars = '';
+  items.forEach((item, i) => {
+    const y = 12 + i * rowH;
+    const barW = Math.max(2, (item.value / maxVal) * chartW);
+    const tooltip = `${item.label} — ${formatDuration(item.value)}`;
+    bars += `
+      <text x="${labelW - 8}" y="${y + rowH / 2 + 4}" text-anchor="end" class="chart-bar-label">${escapeHtml(truncateLabel(item.label, 22))}<title>${escapeHtml(tooltip)}</title></text>
+      <rect class="chart-bar-rect" x="${labelW}" y="${y + 4}" width="${barW}" height="${rowH - 12}" rx="4" fill="${item.color}"><title>${escapeHtml(tooltip)}</title></rect>
+      <text x="${labelW + barW + 8}" y="${y + rowH / 2 + 4}" class="chart-value-label">${escapeHtml(formatDuration(item.value))}</text>
+    `;
+  });
+  return `<svg viewBox="0 0 ${width} ${height}" xmlns="http://www.w3.org/2000/svg">${bars}</svg>`;
+}
+
+function polarToCartesian(cx, cy, r, angleDeg) {
+  const a = (angleDeg * Math.PI) / 180;
+  return [cx + r * Math.cos(a), cy + r * Math.sin(a)];
+}
+
+/** Donut chart + a separate HTML legend (SVG text for a dozen thin slice labels reads poorly, a legend doesn't). */
+function buildDonutChartSvg(items) {
+  const total = items.reduce((s, i) => s + i.value, 0);
+  if (!total) return '';
+  const size = 260;
+  const cx = size / 2, cy = size / 2, r = 100, innerR = 58;
+  let angle = -90;
+  let paths = '';
+  for (const item of items) {
+    const frac = item.value / total;
+    const sweep = Math.max(frac * 360, items.length === 1 ? 359.99 : 0.5);
+    const largeArc = sweep > 180 ? 1 : 0;
+    const startAngle = angle;
+    const endAngle = angle + sweep;
+    const [x1, y1] = polarToCartesian(cx, cy, r, startAngle);
+    const [x2, y2] = polarToCartesian(cx, cy, r, endAngle);
+    const [ix1, iy1] = polarToCartesian(cx, cy, innerR, endAngle);
+    const [ix2, iy2] = polarToCartesian(cx, cy, innerR, startAngle);
+    const tooltip = `${item.label} — ${formatDuration(item.value)} (${Math.round(frac * 100)}%)`;
+    paths += `<path class="chart-donut-slice" d="M ${x1} ${y1} A ${r} ${r} 0 ${largeArc} 1 ${x2} ${y2} L ${ix1} ${iy1} A ${innerR} ${innerR} 0 ${largeArc} 0 ${ix2} ${iy2} Z" fill="${item.color}"><title>${escapeHtml(tooltip)}</title></path>`;
+    angle = endAngle;
+  }
+  return `<svg viewBox="0 0 ${size} ${size}" xmlns="http://www.w3.org/2000/svg">${paths}</svg>`;
+}
+
+function buildLegendHtml(items) {
+  const total = items.reduce((s, i) => s + i.value, 0) || 1;
+  return `<div class="chart-legend">${items.map((i) => `
+    <div class="chart-legend-item">
+      <span class="chart-legend-swatch" style="background:${i.color}"></span>
+      ${escapeHtml(i.label)} — ${formatDuration(i.value)} (${Math.round((i.value / total) * 100)}%)
+    </div>`).join('')}</div>`;
+}
+
+/** Line chart with a filled area, for a day-by-day trend. */
+function buildLineChartSvg(points) {
+  const width = 640, height = 260;
+  const padL = 46, padR = 16, padT = 16, padB = 34;
+  const chartW = width - padL - padR;
+  const chartH = height - padT - padB;
+  const maxVal = Math.max(...points.map((p) => p.value), 1);
+  const stepX = points.length > 1 ? chartW / (points.length - 1) : 0;
+
+  const coords = points.map((p, i) => [padL + i * stepX, padT + chartH - (p.value / maxVal) * chartH]);
+  const pathD = coords.map(([x, y], i) => `${i === 0 ? 'M' : 'L'} ${x.toFixed(1)} ${y.toFixed(1)}`).join(' ');
+  const areaD = `${pathD} L ${coords[coords.length - 1][0].toFixed(1)} ${(padT + chartH).toFixed(1)} L ${coords[0][0].toFixed(1)} ${(padT + chartH).toFixed(1)} Z`;
+
+  const labelEvery = Math.max(1, Math.ceil(points.length / 10));
+  let dots = '', labels = '';
+  points.forEach((p, i) => {
+    const [x, y] = coords[i];
+    const tooltip = `${p.label} — ${formatDuration(p.value)}`;
+    dots += `<circle class="chart-line-dot" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="3.2" fill="var(--primary)"><title>${escapeHtml(tooltip)}</title></circle>`;
+    dots += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="10" fill="transparent"><title>${escapeHtml(tooltip)}</title></circle>`;
+    if (i % labelEvery === 0 || i === points.length - 1) {
+      labels += `<text x="${x.toFixed(1)}" y="${height - 12}" text-anchor="middle" class="chart-bar-label">${escapeHtml(p.label)}</text>`;
+    }
+  });
+
+  return `<svg viewBox="0 0 ${width} ${height}" xmlns="http://www.w3.org/2000/svg">
+    <line x1="${padL}" y1="${padT + chartH}" x2="${width - padR}" y2="${padT + chartH}" class="chart-axis-line" />
+    <path d="${areaD}" fill="var(--primary-100)" />
+    <path d="${pathD}" fill="none" stroke="var(--primary)" stroke-width="2.5" />
+    ${dots}${labels}
+  </svg>`;
+}
+
+/** Two overlaid lines for a day-by-day comparison (Chrome active vs. tracked project time). */
+function buildDualLineChartSvg(seriesA, seriesB, labelA, labelB) {
+  const width = 640, height = 260;
+  const padL = 46, padR = 16, padT = 16, padB = 34;
+  const chartW = width - padL - padR;
+  const chartH = height - padT - padB;
+  const maxVal = Math.max(...seriesA.map((p) => p.value), ...seriesB.map((p) => p.value), 1);
+  const stepX = seriesA.length > 1 ? chartW / (seriesA.length - 1) : 0;
+
+  const toCoords = (series) => series.map((p, i) => [padL + i * stepX, padT + chartH - (p.value / maxVal) * chartH]);
+  const toPath = (coords) => coords.map(([x, y], i) => `${i === 0 ? 'M' : 'L'} ${x.toFixed(1)} ${y.toFixed(1)}`).join(' ');
+
+  const coordsA = toCoords(seriesA);
+  const coordsB = toCoords(seriesB);
+
+  const labelEvery = Math.max(1, Math.ceil(seriesA.length / 10));
+  let dots = '', labels = '';
+  seriesA.forEach((p, i) => {
+    const [xa, ya] = coordsA[i];
+    const [, yb] = coordsB[i];
+    dots += `<circle r="3" fill="var(--primary)" cx="${xa.toFixed(1)}" cy="${ya.toFixed(1)}"><title>${escapeHtml(`${labelA} — ${p.label}: ${formatDuration(p.value)}`)}</title></circle>`;
+    dots += `<circle r="3" fill="var(--accent)" cx="${xa.toFixed(1)}" cy="${yb.toFixed(1)}"><title>${escapeHtml(`${labelB} — ${seriesB[i].label}: ${formatDuration(seriesB[i].value)}`)}</title></circle>`;
+    if (i % labelEvery === 0 || i === seriesA.length - 1) {
+      labels += `<text x="${xa.toFixed(1)}" y="${height - 12}" text-anchor="middle" class="chart-bar-label">${escapeHtml(p.label)}</text>`;
+    }
+  });
+
+  return `<svg viewBox="0 0 ${width} ${height}" xmlns="http://www.w3.org/2000/svg">
+    <line x1="${padL}" y1="${padT + chartH}" x2="${width - padR}" y2="${padT + chartH}" class="chart-axis-line" />
+    <path d="${toPath(coordsA)}" fill="none" stroke="var(--primary)" stroke-width="2.5" />
+    <path d="${toPath(coordsB)}" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-dasharray="5 3" />
+    ${dots}${labels}
+  </svg>`;
+}
+
+function renderChartFilters() {
+  const allProjects = Object.values(state.projects).sort((a, b) => a.name.localeCompare(b.name));
+  el.chartProjectFilters.innerHTML = allProjects.map((p) => `
+    <label class="chart-filter-item">
+      <input type="checkbox" data-project-id="${p.id}" ${(!chartProjectFilter || chartProjectFilter.has(p.id)) ? 'checked' : ''} />
+      <span class="swatch" style="width:8px;height:8px;border-radius:50%;display:inline-block;background:hsl(${p.hue},60%,50%);"></span>
+      ${escapeHtml(p.name)}
+    </label>`).join('') || '<p style="font-size:12px;color:var(--text-tertiary);">No projects yet.</p>';
+  el.chartProjectFilters.querySelectorAll('input[type="checkbox"]').forEach((cb) => {
+    cb.addEventListener('change', () => {
+      const boxes = [...el.chartProjectFilters.querySelectorAll('input[type="checkbox"]')];
+      chartProjectFilter = boxes.every((c) => c.checked) ? null : new Set(boxes.filter((c) => c.checked).map((c) => c.dataset.projectId));
+      renderCharts();
+    });
+  });
+
+  const domainSet = new Set();
+  for (const byDomain of Object.values(state.entries)) {
+    for (const domain of Object.keys(byDomain)) {
+      if (domain !== MANUAL_NOTE_DOMAIN) domainSet.add(domain);
+    }
+  }
+  const allSites = [...domainSet].sort();
+  el.chartSiteFilters.innerHTML = allSites.map((d) => `
+    <label class="chart-filter-item">
+      <input type="checkbox" data-site="${escapeHtml(d)}" ${(!chartSiteFilter || chartSiteFilter.has(d)) ? 'checked' : ''} />
+      <span class="mono" style="font-size:11px;">${escapeHtml(d)}</span>
+    </label>`).join('') || '<p style="font-size:12px;color:var(--text-tertiary);">No sites tracked yet.</p>';
+  el.chartSiteFilters.querySelectorAll('input[type="checkbox"]').forEach((cb) => {
+    cb.addEventListener('change', () => {
+      const boxes = [...el.chartSiteFilters.querySelectorAll('input[type="checkbox"]')];
+      chartSiteFilter = boxes.every((c) => c.checked) ? null : new Set(boxes.filter((c) => c.checked).map((c) => c.dataset.site));
+      renderCharts();
+    });
+  });
+}
+
+function renderCharts() {
+  if (currentView !== 'charts') return;
+  renderChartFilters();
+
+  const { perProjectMs, perSiteMs, perDayMs } = collectChartData(chartRangeStart, chartRangeEnd);
+  const empty = '<p class="chart-empty">Nothing tracked in this range yet.</p>';
+
+  if (chartType === 'project-bar' || chartType === 'project-donut') {
+    const items = [...perProjectMs.entries()]
+      .map(([projectId, ms]) => ({
+        label: state.projects[projectId]?.name || '(unknown)',
+        value: ms,
+        color: state.projects[projectId] ? `hsl(${state.projects[projectId].hue},60%,50%)` : '#999'
+      }))
+      .filter((i) => i.value > 0)
+      .sort((a, b) => b.value - a.value);
+    if (!items.length) { el.chartsContainer.innerHTML = empty; return; }
+    el.chartsContainer.innerHTML = chartType === 'project-bar'
+      ? buildBarChartSvg(items)
+      : `<div style="display:flex;flex-direction:column;align-items:center;width:100%;">${buildDonutChartSvg(items)}${buildLegendHtml(items)}</div>`;
+  } else if (chartType === 'site-bar') {
+    const items = [...perSiteMs.entries()]
+      .map(([domain, ms]) => ({ label: domain, value: ms, color: 'var(--primary)' }))
+      .filter((i) => i.value > 0)
+      .sort((a, b) => b.value - a.value)
+      .slice(0, 15);
+    el.chartsContainer.innerHTML = items.length ? buildBarChartSvg(items) : empty;
+  } else if (chartType === 'daily-line') {
+    const points = [];
+    const cursor = parseDateStr(chartRangeStart);
+    const end = parseDateStr(chartRangeEnd);
+    while (cursor <= end) {
+      const d = dateStr(cursor);
+      points.push({ label: parseDateStr(d).toLocaleDateString(undefined, { day: 'numeric', month: 'short' }), value: state.globalActivity[d] || 0 });
+      cursor.setDate(cursor.getDate() + 1);
+    }
+    el.chartsContainer.innerHTML = points.some((p) => p.value > 0) ? buildLineChartSvg(points) : '<p class="chart-empty">No Chrome-active data in this range.</p>';
+  } else if (chartType === 'weekly-trend') {
+    const byWeek = new Map();
+    for (const [d, ms] of perDayMs.entries()) {
+      const wk = weekStartStr(parseDateStr(d));
+      byWeek.set(wk, (byWeek.get(wk) || 0) + ms);
+    }
+    const items = [...byWeek.entries()]
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([wk, ms]) => ({ label: friendlyWeekRange(wk), value: ms, color: 'var(--accent)' }));
+    el.chartsContainer.innerHTML = items.some((i) => i.value > 0) ? buildBarChartSvg(items) : empty;
+  } else if (chartType === 'active-vs-tracked') {
+    const tracked = [], active = [];
+    const cursor = parseDateStr(chartRangeStart);
+    const end = parseDateStr(chartRangeEnd);
+    while (cursor <= end) {
+      const d = dateStr(cursor);
+      const label = parseDateStr(d).toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+      tracked.push({ label, value: perDayMs.get(d) || 0 });
+      active.push({ label, value: state.globalActivity[d] || 0 });
+      cursor.setDate(cursor.getDate() + 1);
+    }
+    if (!tracked.some((p) => p.value > 0) && !active.some((p) => p.value > 0)) {
+      el.chartsContainer.innerHTML = empty;
+    } else {
+      el.chartsContainer.innerHTML = buildDualLineChartSvg(active, tracked, 'Chrome active', 'Tracked') + buildLegendHtml([
+        { label: 'Chrome active', value: active.reduce((s, p) => s + p.value, 0), color: 'var(--primary)' },
+        { label: 'Tracked', value: tracked.reduce((s, p) => s + p.value, 0), color: 'var(--accent)' }
+      ]);
+    }
+  }
+}
+
 // ------------------------------------------------------------------ view switching
 
 function setView(view) {
@@ -1118,13 +1523,14 @@ function setView(view) {
   el.viewTabs.forEach((btn) => btn.classList.toggle('active', btn.dataset.view === view));
   el.history.classList.toggle('hidden', view !== 'history');
   el.timelineView.classList.toggle('hidden', view !== 'timeline');
-  el.sessionSummaryView.classList.toggle('hidden', view !== 'sessions');
   el.timesheetView.classList.toggle('hidden', view !== 'timesheet');
+  el.chartsView.classList.toggle('hidden', view !== 'charts');
+  el.exportView.classList.toggle('hidden', view !== 'export');
   el.emptyState.classList.add('hidden');
   if (view === 'history') renderHistory();
   if (view === 'timeline') renderTimeline();
-  if (view === 'sessions') renderSessionSummary();
   if (view === 'timesheet') renderTimesheet();
+  if (view === 'charts') renderCharts();
 }
 
 // ------------------------------------------------------------------ static events
@@ -1182,6 +1588,12 @@ function wireStaticEvents() {
     el.autoTrackValue.textContent = enabled ? 'On' : 'Off';
   });
 
+  el.timestampToggle.addEventListener('change', async () => {
+    const enabled = el.timestampToggle.checked;
+    state.settings = await updateSettings({ includeTimestampInNotes: enabled });
+    el.timestampValue.textContent = enabled ? 'On' : 'Off';
+  });
+
   el.addCategoryBtn.addEventListener('click', async () => {
     const name = el.newCategoryInput.value.trim();
     if (!name) return;
@@ -1189,39 +1601,6 @@ function wireStaticEvents() {
     el.newCategoryInput.value = '';
     await loadState();
     renderSettingsPanel();
-  });
-
-  el.sessionsPrevDay.addEventListener('click', () => { sessionSummaryDate = shiftDateStr(sessionSummaryDate, -1); renderSessionSummary(); });
-  el.sessionsNextDay.addEventListener('click', () => { sessionSummaryDate = shiftDateStr(sessionSummaryDate, 1); renderSessionSummary(); });
-
-  el.notesCopyBtn.addEventListener('click', () => {
-    const notes = getDayCommentLog(getByDomainForDate(sessionSummaryDate));
-    if (!notes.length) {
-      el.notesCopyBtn.textContent = 'Nothing to copy';
-      setTimeout(() => { el.notesCopyBtn.textContent = 'Copy'; }, 1500);
-      return;
-    }
-    // Grouped by project, chronological within each — this is "today's
-    // comments in one place" ready to paste into Replicon or similar,
-    // rather than having to open each project's modal separately.
-    const byProject = new Map();
-    for (const n of notes) {
-      if (!byProject.has(n.projectId)) byProject.set(n.projectId, []);
-      byProject.get(n.projectId).push(n);
-    }
-    const lines = [];
-    for (const [projectId, projectNotes] of byProject.entries()) {
-      const project = state.projects[projectId];
-      lines.push(project ? project.name : '(unknown)');
-      for (const n of projectNotes) lines.push(`  ${formatClock(n.ts)} — ${n.comment}`);
-      lines.push('');
-    }
-    navigator.clipboard.writeText(lines.join('\n').trim()).then(() => {
-      el.notesCopyBtn.textContent = 'Copied!';
-      setTimeout(() => { el.notesCopyBtn.textContent = 'Copy'; }, 1500);
-    }).catch(() => {
-      alert('Could not copy automatically — select and copy the notes manually.');
-    });
   });
 
   el.themeSelect.addEventListener('change', async () => {
@@ -1247,6 +1626,16 @@ function wireStaticEvents() {
     el.addAlwaysPromptHint.textContent = `${domain} will now ask every visit.`;
     await loadState();
     renderAlwaysPromptSitesList();
+  });
+
+  el.addIdleExemptBtn.addEventListener('click', async () => {
+    const domain = el.newIdleExemptInput.value.trim().toLowerCase().replace(/^https?:\/\//, '').split('/')[0];
+    if (!domain) return;
+    await addIdleExemptSite(domain);
+    el.newIdleExemptInput.value = '';
+    el.addIdleExemptHint.textContent = `${domain} will keep tracking through idle now.`;
+    await loadState();
+    renderIdleExemptSitesList();
   });
 
   async function runDeleteWithConfirm(label, action) {
@@ -1318,6 +1707,33 @@ function wireStaticEvents() {
 
   el.tsPrevWeek.addEventListener('click', () => { tsWeekStart = shiftDateStr(tsWeekStart, -7); renderTimesheet(); });
   el.tsNextWeek.addEventListener('click', () => { tsWeekStart = shiftDateStr(tsWeekStart, 7); renderTimesheet(); });
+
+  el.chartRangeStart.value = chartRangeStart;
+  el.chartRangeEnd.value = chartRangeEnd;
+  el.chartTypeSelect.value = chartType;
+  el.chartTypeSelect.addEventListener('change', () => { chartType = el.chartTypeSelect.value; renderCharts(); });
+  el.chartRangeStart.addEventListener('change', () => { chartRangeStart = el.chartRangeStart.value || chartRangeStart; renderCharts(); });
+  el.chartRangeEnd.addEventListener('change', () => { chartRangeEnd = el.chartRangeEnd.value || chartRangeEnd; renderCharts(); });
+  el.chartFiltersToggle.addEventListener('click', () => { el.chartsFiltersPanel.classList.toggle('hidden'); });
+  el.chartProjectsAllBtn.addEventListener('click', () => { chartProjectFilter = null; renderCharts(); });
+  el.chartSitesAllBtn.addEventListener('click', () => { chartSiteFilter = null; renderCharts(); });
+
+  document.querySelectorAll('.charts-preset-row [data-preset]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const today = dateStr();
+      if (btn.dataset.preset === 'today') {
+        chartRangeStart = today; chartRangeEnd = today;
+      } else if (btn.dataset.preset === 'week') {
+        chartRangeStart = weekStartStr(); chartRangeEnd = today;
+      } else if (btn.dataset.preset === 'month') {
+        const d = new Date(); d.setDate(1);
+        chartRangeStart = dateStr(d); chartRangeEnd = today;
+      }
+      el.chartRangeStart.value = chartRangeStart;
+      el.chartRangeEnd.value = chartRangeEnd;
+      renderCharts();
+    });
+  });
 
   el.dismissBanner.addEventListener('click', () => {
     el.rolloverBanner.classList.add('hidden');

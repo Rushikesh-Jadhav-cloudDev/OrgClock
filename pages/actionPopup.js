@@ -14,7 +14,7 @@ const $ = (id) => document.getElementById(id);
 const el = {
   status: $('apStatus'), dot: $('apDot'), statusLine: $('apStatusLine'), statusSub: $('apStatusSub'),
   logTask: $('apLogTask'), continueTask: $('apContinue'), dashboard: $('apDashboard'),
-  pause: $('apPause'), resume: $('apResume')
+  trackingToggle: $('apTrackingToggle')
 };
 
 async function getActiveTab() {
@@ -34,25 +34,21 @@ async function render() {
     getActiveSession(), getTaskContext(), getDomainMap(), getProjects(), getSettings()
   ]);
 
+  el.trackingToggle.checked = !settings.manuallyPaused;
+
   if (settings.manuallyPaused) {
     el.status.dataset.state = 'paused';
     el.statusLine.textContent = 'Paused (manual)';
-    el.statusSub.textContent = 'Tracking is off until you resume.';
-    el.pause.classList.add('hidden');
-    el.resume.classList.remove('hidden');
+    el.statusSub.textContent = 'Project time is off until you resume — Chrome active time keeps counting.';
   } else if (activeSession) {
     const project = currentBilledProject(activeSession, taskContext, domainMap, projects);
     el.status.dataset.state = 'tracking';
     el.statusLine.textContent = project ? `Tracking · ${project.name}` : `Tracking · ${activeSession.domain}`;
     el.statusSub.textContent = activeSession.domain;
-    el.pause.classList.remove('hidden');
-    el.resume.classList.add('hidden');
   } else {
     el.status.dataset.state = 'idle';
     el.statusLine.textContent = 'Not tracking';
     el.statusSub.textContent = '';
-    el.pause.classList.remove('hidden');
-    el.resume.classList.add('hidden');
   }
 }
 
@@ -82,14 +78,9 @@ el.dashboard.addEventListener('click', async () => {
   window.close();
 });
 
-el.pause.addEventListener('click', async () => {
-  await updateSettings({ manuallyPaused: true });
-  window.close();
-});
-
-el.resume.addEventListener('click', async () => {
-  await updateSettings({ manuallyPaused: false });
-  window.close();
+el.trackingToggle.addEventListener('change', async () => {
+  await updateSettings({ manuallyPaused: !el.trackingToggle.checked });
+  render();
 });
 
 render();

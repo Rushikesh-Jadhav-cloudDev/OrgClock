@@ -30,8 +30,26 @@ body {
   70% { box-shadow: 0 0 0 6px rgba(0,184,169,0); }
   100% { box-shadow: 0 0 0 0 rgba(0,184,169,0); }
 }
+.ap-status-text { flex: 1; min-width: 0; }
 .ap-status-line { font-size: 13px; font-weight: 700; margin: 0; }
 .ap-status-sub { font-size: 11px; color: var(--text-tertiary); margin: 2px 0 0; font-family: var(--font-mono); }
+
+/* The master on/off toggle — deliberately IN the status row, not buried
+   in the button list below, so it reads unmistakably as "the" tracking
+   switch rather than one menu item among several. */
+.ap-toggle { position: relative; display: inline-block; width: 36px; height: 21px; flex-shrink: 0; }
+.ap-toggle input { opacity: 0; width: 0; height: 0; }
+.ap-toggle-slider {
+  position: absolute; cursor: pointer; inset: 0;
+  background: var(--border-strong); border-radius: 999px;
+  transition: background 150ms ease;
+}
+.ap-toggle-slider::before {
+  content: ''; position: absolute; width: 15px; height: 15px; left: 3px; top: 3px;
+  background: #fff; border-radius: 50%; transition: transform 150ms ease;
+}
+.ap-toggle input:checked + .ap-toggle-slider { background: var(--accent); }
+.ap-toggle input:checked + .ap-toggle-slider::before { transform: translateX(15px); }
 
 .ap-actions { display: flex; flex-direction: column; gap: 6px; }
 .ap-btn {
@@ -55,5 +73,3 @@ body {
 .ap-btn-primary { background: var(--primary); color: var(--text-on-primary); border-color: var(--primary); }
 .ap-btn-primary svg { color: var(--text-on-primary); }
 .ap-btn-primary:hover { background: var(--primary-600); }
-.ap-btn-pause svg { color: var(--warning); }
-.ap-btn-resume svg { color: var(--accent); }

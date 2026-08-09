@@ -104,9 +104,6 @@
     if (window.crypto && crypto.randomUUID) return `${prefix}_${crypto.randomUUID()}`;
     return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
   }
-  function guessOrgLabel(host) {
-    return host.split('.')[0].split('--')[0];
-  }
   function escapeHtml(str) {
     const d = document.createElement('div');
     d.textContent = str == null ? '' : str;
@@ -135,8 +132,35 @@
     }
   }
 
-  async function loadAll() {
-    return chrome.storage.local.get(['projects', 'domainMap', 'taskContext', 'entries', 'settings', 'excludedSites', 'alwaysPromptSites']);
+  /** Promisified chrome.runtime.sendMessage, since content scripts can't use ES modules (see file header) and this needs to work without lib/storage.js. */
+  function sendMessageAsync(message, fallback) {
+    return new Promise((resolve) => {
+      try {
+        chrome.runtime.sendMessage(message, (response) => {
+          if (chrome.runtime.lastError || !response) { resolve(fallback); return; }
+          resolve(response);
+        });
+      } catch {
+        resolve(fallback);
+      }
+    });
+  }
+
+  /**
+   * `entries` now lives in IndexedDB (see lib/db.js), reachable only from
+   * the extension's own origin — a content script's own `indexedDB.open()`
+   * would silently open an isolated database scoped to the PAGE's origin
+   * instead, never touching what background.js/the dashboard see. So this
+   * asks background.js for today's record instead of reading it directly,
+   * and wraps it back into the same `{ [date]: byDomain }` shape the rest
+   * of this file already expects.
+   */
+  async function loadAll(date) {
+    const [storageData, todayResp] = await Promise.all([
+      chrome.storage.local.get(['projects', 'domainMap', 'taskContext', 'settings', 'excludedSites', 'alwaysPromptSites', 'lastActiveProjectId']),
+      sendMessageAsync({ type: 'ORBIT_GET_TODAY_ENTRIES', date }, { byDomain: {} })
+    ]);
+    return { ...storageData, entries: { [date]: todayResp.byDomain || {} } };
   }
 
   function init() {
@@ -151,13 +175,13 @@
     if (BUILT_IN_EXCLUDED.includes(domain)) return;
 
     const dismissKey = `dismissed:${domain}`;
+    const today = todayStr();
 
-    const data = await loadAll();
+    const data = await loadAll(today);
     if (data.excludedSites && data.excludedSites[domain]) return;
     if (data.settings && data.settings.autoTrackEnabled === false) return;
     if (data.settings && data.settings.manuallyPaused) return;
 
-    const today = todayStr();
     const alwaysPrompt = Boolean(data.alwaysPromptSites && data.alwaysPromptSites[domain]);
     const alreadySetUpToday = Boolean(data.entries?.[today]?.[domain]);
 
@@ -185,8 +209,9 @@
     if (message?.type === 'ORBIT_RECHECK') {
       runChecks();
     } else if (message?.type === 'ORBIT_ADD_NOTE') {
-      loadAll().then((data) => {
-        mountOverlay({ ...data, domain, today: todayStr(), dismissKey: `dismissed:${domain}`, mode: 'add-note' });
+      const today = todayStr();
+      loadAll(today).then((data) => {
+        mountOverlay({ ...data, domain, today, dismissKey: `dismissed:${domain}`, mode: 'add-note' });
       });
     }
   });
@@ -195,7 +220,7 @@
 
   async function mountOverlay(ctx) {
     if (document.getElementById('orbit-timesheet-overlay-host')) return;
-    const { projects = {}, domainMap = {}, taskContext = {}, entries = {}, settings = {}, alwaysPromptSites = {}, domain, today, mode } = ctx;
+    const { projects = {}, domainMap = {}, taskContext = {}, entries = {}, settings = {}, alwaysPromptSites = {}, lastActiveProjectId = null, domain, today, mode } = ctx;
     const isAlwaysPrompt = Boolean(alwaysPromptSites[domain]);
 
     const theme = settings.theme || 'system';
@@ -214,7 +239,16 @@
     const homeProjectId = domainMap[domain] || null;
     const homeProject = homeProjectId ? projects[homeProjectId] : null;
     const currentCtx = taskContext[domain];
-    const workingProjectId = currentCtx?.projectId || homeProjectId || null;
+    // "Currently working on" prefers the GLOBALLY most-recently-confirmed
+    // project (across every domain) over this one domain's own remembered
+    // context — but only when reopening the popup (add-note), not on a
+    // brand-new site's first-visit setup, where defaulting to whatever
+    // project you just linked as home makes more sense than a random
+    // unrelated project from elsewhere. Falls back to per-domain memory,
+    // then home, if there's no global last-active project (or it was
+    // since deleted).
+    const globalLastProject = mode !== 'first-visit' && lastActiveProjectId && projects[lastActiveProjectId] ? lastActiveProjectId : null;
+    const workingProjectId = globalLastProject || currentCtx?.projectId || homeProjectId || null;
     const workingProject = workingProjectId ? projects[workingProjectId] : null;
 
     const referenceNote = summarizeExistingNotesForProject(entries, workingProjectId, today);
@@ -240,7 +274,7 @@
               <button type="button" id="orbitChangeHomeBtn">Change</button>
             </div>
             <div id="orbitHomePicker" style="${homeProject ? 'display:none;' : ''}">
-              <input type="text" id="orbitHomeSearch" placeholder="Search or type a new project name…" autocomplete="off" />
+              <input type="text" id="orbitHomeSearch" placeholder="Search existing projects, or type a new name…" autocomplete="off" />
               <ul class="orbit-list" id="orbitHomeList"></ul>
               <p class="orbit-hint" id="orbitHomeHint"></p>
             </div>
@@ -296,7 +330,7 @@
       chipEl: root.querySelector('#orbitHomeChip'), pickerEl: root.querySelector('#orbitHomePicker'),
       searchEl: root.querySelector('#orbitHomeSearch'), listEl: root.querySelector('#orbitHomeList'),
       hintEl: root.querySelector('#orbitHomeHint'), changeBtn: root.querySelector('#orbitChangeHomeBtn'),
-      initialQuery: homeProject ? '' : guessOrgLabel(domain),
+      initialQuery: '',
       onSelect: (id, name) => {
         selectedHomeId = id;
         if (!workTouchedByUser) {
@@ -358,22 +392,51 @@
       saveBtn.disabled = true;
       saveBtn.textContent = 'Saving…';
 
+      // Must happen BEFORE the storage write below, and only when the
+      // working project actually changed. If sent after (or omitted
+      // entirely), a session already running on this domain — e.g. a long
+      // meeting tab that's been active and focused the whole time — would
+      // never get split at the moment you switched: it only flushes once
+      // when the tab loses focus, tagging the ENTIRE elapsed block with
+      // whatever project is current by then, not what was true for the
+      // earlier portion.
+      if (workingProjectId && finalWorkId !== workingProjectId) {
+        try {
+          await chrome.runtime.sendMessage({
+            type: 'ORBIT_PROJECT_SWITCH_FLUSH',
+            domain,
+            oldProjectId: workingProjectId
+          });
+        } catch { /* background may be asleep — best effort, not fatal */ }
+      }
+
       domainMap[domain] = finalHomeId;
       taskContext[domain] = { projectId: finalWorkId, updatedAt: Date.now() };
-      entries[today] = entries[today] || {};
-      entries[today][domain] = entries[today][domain] || { sessions: [] };
 
+      // Entries (today's container, and any comment) now live in
+      // IndexedDB via background.js — see loadAll()'s comment above for
+      // why this can't just be a local chrome.storage.local write.
+      const ensureResp = await sendMessageAsync({ type: 'ORBIT_ENSURE_ENTRY_CONTAINER', date: today, domain }, { ok: false });
+      let noteResp = { ok: true };
+      let commentText = comment.value.trim();
+      if (commentText && settings.includeTimestampInNotes) {
+        commentText = `${formatClockLocal(Date.now())} — ${commentText}`;
+      }
       // A comment is always its own instant, timestamped note now — not
       // something written into taskContext that persists forward and
       // could get silently relabeled by a later edit (that was the old
       // bug). Zero duration by design: it's a note, not tracked time.
-      const commentText = comment.value.trim();
-      const now = Date.now();
-      if (commentText) {
-        entries[today][domain].sessions.push({
-          id: newId('note'), start: now, end: now, projectId: finalWorkId,
-          comment: commentText, manual: true, isNote: true
-        });
+      if (ensureResp.ok && commentText) {
+        noteResp = await sendMessageAsync({
+          type: 'ORBIT_SAVE_QUICK_NOTE', date: today, domain, projectId: finalWorkId, comment: commentText
+        }, { ok: false });
+      }
+
+      if (!ensureResp.ok || !noteResp.ok) {
+        saveBtn.disabled = false;
+        saveBtn.textContent = mode === 'first-visit' ? 'Start tracking' : 'Save';
+        homeHint.textContent = 'Something went wrong — try again.';
+        return;
       }
 
       // Bump recency so the picker can surface these first next time,
@@ -381,11 +444,12 @@
       // already exists just because it's linked to a different domain
       // (domain→project matching stays explicit-only by design — this
       // just makes the manual pick faster, see setupPicker below).
+      const now = Date.now();
       if (projects[finalHomeId]) projects[finalHomeId].lastUsedAt = now;
       if (projects[finalWorkId]) projects[finalWorkId].lastUsedAt = now;
 
       try {
-        await chrome.storage.local.set({ projects, domainMap, taskContext, entries });
+        await chrome.storage.local.set({ projects, domainMap, taskContext, lastActiveProjectId: finalWorkId });
         teardown();
       } catch {
         saveBtn.disabled = false;
@@ -502,13 +566,14 @@
 
     if (pickerEl.style.display !== 'none') {
       searchEl.value = initialQuery;
-      // Render against an EMPTY query on mount, not the guessed initial
-      // text — the guess (e.g. "synlawn2025" from a sandbox subdomain)
-      // very often won't substring-match an existing project's real name
-      // (e.g. "Synlawn"), which used to leave the list empty and quietly
-      // default to creating a near-duplicate project on Save unless the
-      // user noticed and manually re-searched. Showing the real recent
-      // projects up front makes the existing one a visible one-click pick.
+      // Deliberately rendered against an EMPTY query, not the domain's
+      // subdomain-derived guess — a guess like "synlawn2025" sitting in
+      // the box looked like a valid answer and could get silently saved
+      // as-is, creating a near-duplicate project distinct from the real
+      // one ("Synlawn") instead of linking to it. Showing the real
+      // recent projects up front makes the existing one a visible
+      // one-click pick, and leaving the box genuinely empty means Save
+      // requires an explicit choice instead of trusting a guess.
       renderList('');
     }
     searchEl.addEventListener('input', (e) => renderList(e.target.value));
